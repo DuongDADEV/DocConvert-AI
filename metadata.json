@@ -1,0 +1,6 @@
+{
+  "name": "DocConvert AI",
+  "description": "Nền tảng SaaS chuyển đổi PDF Scan, sao kê ngân hàng thành Excel và Word với Azure AI Document Intelligence",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

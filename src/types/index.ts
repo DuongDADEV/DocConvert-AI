@@ -1,0 +1,161 @@
+export interface User {
+  id: string;
+  email: string;
+  fullName: string;
+  currentPlanId: string;
+  usedDocuments?: number;
+  createdAt: string;
+}
+
+export interface Plan {
+  id: string;
+  name: string;
+  price_vnd: number;
+  duration_days: number;
+  document_quota: number;
+  features: string[];
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface QuotaInfo {
+  allowed: boolean;
+  used: number;
+  total: number;
+  remaining: number;
+  planId: string;
+  planName: string;
+  message?: string;
+}
+
+export interface DocumentItem {
+  id: string;
+  user_id: string;
+  original_filename: string;
+  file_name: string;
+  file_type: 'PDF' | 'JPG' | 'JPEG' | 'PNG';
+  mime_type: string;
+  file_size: number;
+  page_count: number;
+  storage_bucket: string;
+  storage_path: string;
+  document_type: string;
+  status: 'UPLOADED' | 'QUEUED' | 'PROCESSING' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED' | 'DELETED';
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface ProcessingJob {
+  id: string;
+  document_id: string;
+  user_id: string;
+  status: 'QUEUED' | 'VALIDATING' | 'UPLOADING' | 'PROCESSING' | 'PARSING' | 'VALIDATING_RESULT' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED';
+  current_step: string;
+  progress: number;
+  attempt_count: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExtractedCell {
+  id: string;
+  rowIndex: number;
+  columnIndex: number;
+  rowSpan: number;
+  columnSpan: number;
+  rawValue: string;
+  normalizedValue: string;
+  cellType: 'TEXT' | 'MONEY' | 'DATE' | 'NUMBER';
+  confidence: number;
+  isReviewed: boolean;
+  boundingPolygon?: number[];
+  updatedAt?: string;
+}
+
+export interface ExtractedRow {
+  id: string;
+  rowIndex: number;
+  isHeader: boolean;
+  cells: ExtractedCell[];
+}
+
+export interface ExtractedTable {
+  id: string;
+  pageNumber: number;
+  tableIndex: number;
+  rowCount: number;
+  columnCount: number;
+  confidence: number;
+  boundingRegions?: Array<{ pageNumber: number; polygon: number[] }>;
+  headers: string[];
+  rows: ExtractedRow[];
+}
+
+export interface OCRPageResult {
+  id: string;
+  document_id: string;
+  page_number: number;
+  raw_text: string;
+  confidence_score: number;
+  azure_model_id: string;
+  metadata?: Record<string, any>;
+  created_at: string;
+}
+
+export interface OCRStats {
+  totalCells: number;
+  lowConfidenceCount: number;
+  mediumConfidenceCount: number;
+  highConfidenceCount: number;
+  requiresReview: boolean;
+}
+
+export interface DocumentOCRData {
+  document: DocumentItem;
+  job?: ProcessingJob | null;
+  pages: OCRPageResult[];
+  tables: ExtractedTable[];
+  metadata?: Record<string, any>;
+  stats: OCRStats;
+}
+
+export interface AuditLog {
+  id: string;
+  user_id: string;
+  action: string;
+  resource_type?: string;
+  resource_id?: string;
+  ip_address?: string;
+  metadata?: Record<string, any>;
+  created_at: string;
+}
+
+export interface ExportItem {
+  id: string;
+  user_id: string;
+  document_id: string;
+  export_format: 'XLSX' | 'DOCX';
+  export_mode: 'ORIGINAL' | 'NORMALIZED';
+  file_name: string;
+  file_size: number;
+  storage_bucket: string;
+  storage_path: string;
+  status: 'PENDING' | 'COMPLETED' | 'FAILED';
+  error_message?: string | null;
+  metadata?: Record<string, any>;
+  created_at: string;
+}
+
+export interface AuthResponse {
+  success: boolean;
+  token?: string;
+  user?: User;
+  quota?: QuotaInfo;
+  error?: string;
+  message?: string;
+}

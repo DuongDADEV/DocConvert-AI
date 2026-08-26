@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DocConvert AI - Chuyển PDF Scan & Sao Kê Ngân Hàng Thành Excel/Word</title>
+    <meta name="description" content="Nền tảng SaaS chuyển đổi PDF scan, sao kê ngân hàng và tài liệu dạng bảng thành Excel và Word với Azure AI Document Intelligence." />
+    <meta property="og:title" content="DocConvert AI - Chuyển PDF Scan & Sao Kê Ngân Hàng Thành Excel/Word" />
+    <meta property="og:description" content="Chuyển PDF Scan thành Excel/Word nhanh hơn, chính xác hơn. Đặc biệt dành cho sao kê ngân hàng và tài liệu dạng bảng." />
+    <meta property="og:type" content="website" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+      // Defensive handling for window.fetch in sandboxed iframes where fetch has only a prototype getter
+      try {
+        let _customFetch = typeof window !== 'undefined' && window.fetch ? window.fetch.bind(window) : undefined;
+        Object.defineProperty(window, 'fetch', {
+          get: function() {
+            return _customFetch;
+          },
+          set: function(val) {
+            _customFetch = val;
+          },
+          configurable: true,
+          enumerable: true
+        });
+      } catch (_e) {
+        // Silently ignore if browser environment restricts property definition
+      }
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased font-sans">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
