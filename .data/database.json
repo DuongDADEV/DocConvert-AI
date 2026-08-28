@@ -129,6 +129,38 @@
       "full_name": "Hoa Hong",
       "created_at": "2026-08-26T04:37:20.927Z",
       "updated_at": "2026-08-26T04:37:20.927Z"
+    },
+    {
+      "id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "email": "thanhduong@aioptimusdata.com",
+      "password_hash": "$2b$10$tJwAetXoJ.VFSJkDcvUXZuJ.D.BbhVBFFRI9j.ovbVke89wduUPrO",
+      "full_name": "thanhduong",
+      "created_at": "2026-08-28T07:05:41.987Z",
+      "updated_at": "2026-08-28T07:05:41.987Z"
+    },
+    {
+      "id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "email": "thanhduong20066@gmail.com",
+      "password_hash": "$2b$10$K8VAKgGjgql7T9fg71VfpeMeBA1ntYeG5ZpMnQvI3SIKfflZDOAC.",
+      "full_name": "Văn Thường",
+      "created_at": "2026-08-28T07:11:03.393Z",
+      "updated_at": "2026-08-28T07:11:03.393Z"
+    },
+    {
+      "id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "email": "vukiet234@gmail.com",
+      "password_hash": "$2b$10$.hNZZlyEHP4MkA8oQ91NCu/u4UpHWKud.z1u5uVIPOQhNa6iEzzW.",
+      "full_name": "Vũ Kiệt",
+      "created_at": "2026-08-28T07:16:32.759Z",
+      "updated_at": "2026-08-28T07:16:32.759Z"
+    },
+    {
+      "id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "email": "hoangan2345@gmail.com",
+      "password_hash": "$2b$10$C25n1mSKC4qmfCaqA8lSR.UCAxMRgpfRCZo5RzPSyB1UNZGHx2.AK",
+      "full_name": "Hoàng An",
+      "created_at": "2026-08-28T07:19:55.467Z",
+      "updated_at": "2026-08-28T07:19:55.467Z"
     }
   ],
   "profiles": [
@@ -341,6 +373,76 @@
       "used_documents": 2,
       "created_at": "2026-08-26T04:37:20.927Z",
       "updated_at": "2026-08-26T08:10:37.120Z"
+    },
+    {
+      "id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "email": "thanhduong@aioptimusdata.com",
+      "full_name": "thanhduong",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:05:41.987Z",
+      "updated_at": "2026-08-28T07:05:41.987Z"
+    },
+    {
+      "id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "email": "thanhduong20066@gmail.com",
+      "full_name": "Văn Thường",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:11:03.393Z",
+      "updated_at": "2026-08-28T07:11:03.393Z"
+    },
+    {
+      "id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "email": "vukiet234@gmail.com",
+      "full_name": "Vũ Kiệt",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:16:32.759Z",
+      "updated_at": "2026-08-28T07:16:32.759Z"
+    },
+    {
+      "id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "email": "hoangan2345@gmail.com",
+      "full_name": "Hoàng An",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:19:55.467Z",
+      "updated_at": "2026-08-28T07:19:55.467Z"
+    },
+    {
+      "id": "1024422f-b22b-4a62-820d-f6614b71ddcf",
+      "email": "test_hoangan_auto@gmail.com",
+      "full_name": "Phan Hoang An",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:24:31.527Z",
+      "updated_at": "2026-08-28T07:24:31.527Z"
+    },
+    {
+      "id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "email": "thanhduong9988@gmail.com",
+      "full_name": "Thành Dương",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:30:31.251Z",
+      "updated_at": "2026-08-28T07:30:31.251Z"
+    },
+    {
+      "id": "85109866-9c44-457b-83ba-9555024bf04c",
+      "email": "huuphuc2344@gmail.com",
+      "full_name": "Hữu Phúc",
+      "avatar_url": null,
+      "current_plan_id": "FREE",
+      "used_documents": 0,
+      "created_at": "2026-08-28T07:31:49.203Z",
+      "updated_at": "2026-08-28T07:31:49.203Z"
     }
   ],
   "subscriptions": [
@@ -553,6 +655,76 @@
       "expires_at": "2036-08-23T04:37:20.927Z",
       "payment_status": "COMPLETED",
       "created_at": "2026-08-26T04:37:20.927Z"
+    },
+    {
+      "id": "c5441e7a-6e0e-443d-a52a-54721433e9d7",
+      "user_id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:05:41.987Z",
+      "expires_at": "2036-08-25T07:05:41.987Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:05:41.987Z"
+    },
+    {
+      "id": "ecf47453-a547-4a3e-8a93-c84e517a1174",
+      "user_id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:11:03.393Z",
+      "expires_at": "2036-08-25T07:11:03.393Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:11:03.393Z"
+    },
+    {
+      "id": "293621ae-4c51-4778-af8e-49e30456d25b",
+      "user_id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:16:32.759Z",
+      "expires_at": "2036-08-25T07:16:32.759Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:16:32.759Z"
+    },
+    {
+      "id": "277ddcfe-aee8-4fae-b7aa-326c35888ccd",
+      "user_id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:19:55.467Z",
+      "expires_at": "2036-08-25T07:19:55.467Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:19:55.467Z"
+    },
+    {
+      "id": "19028618-4475-4d86-a852-06f14704191a",
+      "user_id": "1024422f-b22b-4a62-820d-f6614b71ddcf",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:24:31.527Z",
+      "expires_at": "2036-08-25T07:24:31.528Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:24:31.527Z"
+    },
+    {
+      "id": "fcef4340-128f-40c1-b5b5-273167ad9399",
+      "user_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:30:31.251Z",
+      "expires_at": "2036-08-25T07:30:31.251Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:30:31.251Z"
+    },
+    {
+      "id": "213c38d2-5b73-45b4-b3dc-e47e21345014",
+      "user_id": "85109866-9c44-457b-83ba-9555024bf04c",
+      "plan_id": "FREE",
+      "status": "ACTIVE",
+      "start_at": "2026-08-28T07:31:49.203Z",
+      "expires_at": "2036-08-25T07:31:49.203Z",
+      "payment_status": "COMPLETED",
+      "created_at": "2026-08-28T07:31:49.203Z"
     }
   ],
   "usage": [
@@ -645,6 +817,69 @@
       "quota_limit": 3,
       "last_reset_at": "2026-08-26T04:37:20.927Z",
       "updated_at": "2026-08-26T08:10:37.120Z"
+    },
+    {
+      "id": "242e0e66-2032-482a-8408-8166971f9faa",
+      "user_id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:05:41.987Z",
+      "updated_at": "2026-08-28T07:05:41.987Z"
+    },
+    {
+      "id": "ff419466-d56d-4e9e-bd80-7ee0d224b995",
+      "user_id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:11:03.393Z",
+      "updated_at": "2026-08-28T07:11:03.393Z"
+    },
+    {
+      "id": "6ef2d85e-c743-4fd9-84c3-11a3438ad22d",
+      "user_id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:16:32.759Z",
+      "updated_at": "2026-08-28T07:16:32.759Z"
+    },
+    {
+      "id": "716eb346-82a6-4fc1-927a-3d921b11cb37",
+      "user_id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:19:55.467Z",
+      "updated_at": "2026-08-28T07:19:55.467Z"
+    },
+    {
+      "id": "a6a6796a-c50e-4f2b-8111-8b5e44014572",
+      "user_id": "1024422f-b22b-4a62-820d-f6614b71ddcf",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:24:31.527Z",
+      "updated_at": "2026-08-28T07:24:31.527Z"
+    },
+    {
+      "id": "043a2338-82b3-406f-9cfe-012ac5359e94",
+      "user_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:30:31.251Z",
+      "updated_at": "2026-08-28T07:30:31.251Z"
+    },
+    {
+      "id": "1ff22647-c4b0-4343-9c4b-2e5eb40ebedc",
+      "user_id": "85109866-9c44-457b-83ba-9555024bf04c",
+      "month_period": "2026-08",
+      "used_count": 0,
+      "quota_limit": 3,
+      "last_reset_at": "2026-08-28T07:31:49.203Z",
+      "updated_at": "2026-08-28T07:31:49.203Z"
     }
   ],
   "documents": [
@@ -3233,6 +3468,166 @@
         "jobId": "1e1c08b7-c44a-4477-8548-b2bb495d312d"
       },
       "created_at": "2026-08-26T08:11:25.969Z"
+    },
+    {
+      "id": "762df475-b5c2-4cfb-866b-7bf1094eca21",
+      "user_id": "cb6fc5d9-acf1-4431-8206-e74a998e65ec",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "cb6fc5d9-acf1-4431-8206-e74a998e65ec",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T06:50:35.412Z"
+    },
+    {
+      "id": "3c3ebcc2-1e48-43f5-9aa0-4cd1e185f06c",
+      "user_id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:05:42.023Z"
+    },
+    {
+      "id": "82849ba0-21c4-4c4e-9560-83d96c000594",
+      "user_id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "2740d1ea-a934-4959-8d2f-fa7cedb66a68",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:10:27.332Z"
+    },
+    {
+      "id": "4e59b467-109c-4f90-873c-d9ea65663d29",
+      "user_id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:11:03.424Z"
+    },
+    {
+      "id": "78ca3886-0668-452c-b230-28bd9101f49e",
+      "user_id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "a49e5d07-d69e-433a-9b23-008631e228be",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:16:02.299Z"
+    },
+    {
+      "id": "7af2b7b9-cd35-4510-9723-709f0209da90",
+      "user_id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:16:32.792Z"
+    },
+    {
+      "id": "e7bf2680-2ae4-42db-9353-abf6851e34d5",
+      "user_id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "05270851-0915-477e-a3f0-c55d450f0e81",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:19:13.091Z"
+    },
+    {
+      "id": "4d749c57-f411-4dbb-9ef4-8c657d6e6f6c",
+      "user_id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:19:55.483Z"
+    },
+    {
+      "id": "91f2add2-a717-4134-8dbb-18e88a73f111",
+      "user_id": "f3b2e8ba-c854-42d9-b22d-66d10b6ec8a1",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "f3b2e8ba-c854-42d9-b22d-66d10b6ec8a1",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:23:22.324Z"
+    },
+    {
+      "id": "681ab56c-d06f-4be5-acd0-b72d1adf32d0",
+      "user_id": "1024422f-b22b-4a62-820d-f6614b71ddcf",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "1024422f-b22b-4a62-820d-f6614b71ddcf",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:24:31.549Z"
+    },
+    {
+      "id": "847d19d0-4bb7-4fba-83ee-9ea338370a5a",
+      "user_id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "c7d1f820-2ce8-43d2-9f81-80f594c95a65",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:30:01.080Z"
+    },
+    {
+      "id": "77003be3-b8d1-4669-a938-8c458eb04441",
+      "user_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:30:31.274Z"
+    },
+    {
+      "id": "cd82a53a-0aa7-42fb-92b7-be90b03a7d9b",
+      "user_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:30:49.042Z"
+    },
+    {
+      "id": "fb3e9c90-90d5-4633-b095-fd4dfb719eda",
+      "user_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "action": "LOGIN_USER",
+      "resource_type": "profiles",
+      "resource_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:31:12.229Z"
+    },
+    {
+      "id": "14d9e8ca-d622-47e3-9726-7c26ab4ba397",
+      "user_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "action": "LOGOUT_USER",
+      "resource_type": "profiles",
+      "resource_id": "06cc5335-ff6f-47ce-ab19-3f465cf355ff",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:31:21.167Z"
+    },
+    {
+      "id": "6b827a1d-6ccf-44d6-aa0a-25df425dc060",
+      "user_id": "85109866-9c44-457b-83ba-9555024bf04c",
+      "action": "REGISTER_USER",
+      "resource_type": "profiles",
+      "resource_id": "85109866-9c44-457b-83ba-9555024bf04c",
+      "ip_address": "127.0.0.1",
+      "metadata": {},
+      "created_at": "2026-08-28T07:31:49.229Z"
     }
   ],
   "sessions": [
@@ -3283,12 +3678,6 @@
       "user_id": "6573e3da-41c6-451c-8027-b52024518bf9",
       "email": "audit_userb_1787409414147@example.com",
       "expires_at": 1788014214391
-    },
-    {
-      "access_token": "sbp_cb6fc5d9-acf1-4431-8206-e74a998e65ec_408c65c82f8d20ce861c2c43dbd09aaec6ca39846109ccc9a9d8fd9633bbcda4",
-      "user_id": "cb6fc5d9-acf1-4431-8206-e74a998e65ec",
-      "email": "hoahongbds20078@gmail.com",
-      "expires_at": 1788323840927
     }
   ],
   "ocr_results": [

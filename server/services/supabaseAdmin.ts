@@ -1,31 +1,20 @@
+import 'dotenv/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Environment credentials (strictly server-side ONLY)
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-
-/**
- * ============================================================================
- * SUPABASE ADMIN SERVICE ROLE CLIENT
- * ============================================================================
- * 
- * AUDIT & COMPLIANCE RULES:
- * - SUPABASE_SERVICE_ROLE_KEY has bypassrls = true permissions.
- * - NEVER exposed to frontend bundles or client responses.
- * - MUST NOT be used for regular user CRUD queries where user session is available.
- * 
- * ALLOWED USE CASES:
- * 1. System Plan Seeding & Migration Setup: Bootstrapping static billing plans.
- * 2. Background Processing Worker: Processing queued OCR jobs when no HTTP request session is active.
- * 3. System Health Checks & Infrastructure Monitoring.
- */
+function getAdminConfig() {
+  const rawUrl = process.env.SUPABASE_URL || '';
+  const url = rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  return { url, serviceRoleKey };
+}
 
 let adminClient: SupabaseClient | null = null;
 
 export function getSupabaseAdminClient(): SupabaseClient | null {
-  if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  const { url, serviceRoleKey } = getAdminConfig();
+  if (url && serviceRoleKey) {
     if (!adminClient) {
-      adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      adminClient = createClient(url, serviceRoleKey, {
         auth: {
           persistSession: false,
           autoRefreshToken: false,

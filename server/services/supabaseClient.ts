@@ -1,10 +1,14 @@
+import 'dotenv/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { db } from '../db/db.js';
 
-// Environment credentials (strictly server-side or client public config)
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+function getSupabaseConfig() {
+  const rawUrl = process.env.SUPABASE_URL || '';
+  const url = rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+  const anonKey = process.env.SUPABASE_ANON_KEY || '';
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  return { url, anonKey, serviceRoleKey };
+}
 
 export interface AuthenticatedUser {
   id: string;
@@ -20,9 +24,10 @@ export interface AuthenticatedUser {
 let baseClient: SupabaseClient | null = null;
 
 export function getBaseSupabaseClient(): SupabaseClient | null {
-  if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  const { url, anonKey } = getSupabaseConfig();
+  if (url && anonKey) {
     if (!baseClient) {
-      baseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      baseClient = createClient(url, anonKey, {
         auth: {
           persistSession: false,
           autoRefreshToken: false,
@@ -39,8 +44,9 @@ export function getBaseSupabaseClient(): SupabaseClient | null {
  * Injects user's access token so Supabase Database evaluates auth.uid() = user.id
  */
 export function createSupabaseUserClient(accessToken: string): SupabaseClient | null {
-  if (SUPABASE_URL && SUPABASE_ANON_KEY && accessToken) {
-    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const { url, anonKey } = getSupabaseConfig();
+  if (url && anonKey && accessToken) {
+    return createClient(url, anonKey, {
       global: {
         headers: {
           Authorization: `Bearer ${accessToken}`,

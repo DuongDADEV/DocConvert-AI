@@ -454,6 +454,53 @@ class DatabaseService {
     return this.state.profiles.find((p) => p.email.toLowerCase() === email.toLowerCase().trim());
   }
 
+  ensureProfile(userId: string, email: string, fullName: string): ProfileRecord {
+    let profile = this.findProfileById(userId);
+    if (!profile) {
+      const now = new Date().toISOString();
+      profile = {
+        id: userId,
+        email: email.toLowerCase().trim(),
+        full_name: fullName.trim() || 'User',
+        avatar_url: null,
+        current_plan_id: 'FREE',
+        used_documents: 0,
+        created_at: now,
+        updated_at: now,
+      };
+      this.state.profiles.push(profile);
+
+      // Default Free Subscription
+      const sub: SubscriptionRecord = {
+        id: crypto.randomUUID(),
+        user_id: userId,
+        plan_id: 'FREE',
+        status: 'ACTIVE',
+        start_at: now,
+        expires_at: new Date(Date.now() + 3650 * 86400000).toISOString(),
+        payment_status: 'COMPLETED',
+        created_at: now,
+      };
+      this.state.subscriptions.push(sub);
+
+      // Default Monthly Usage
+      const currentMonth = new Date().toISOString().substring(0, 7);
+      const usage: UsageRecord = {
+        id: crypto.randomUUID(),
+        user_id: userId,
+        month_period: currentMonth,
+        used_count: 0,
+        quota_limit: 3,
+        last_reset_at: now,
+        updated_at: now,
+      };
+      this.state.usage.push(usage);
+
+      this.save();
+    }
+    return profile;
+  }
+
   updateProfile(id: string, updates: Partial<ProfileRecord>): ProfileRecord | null {
     const idx = this.state.profiles.findIndex((p) => p.id === id);
     if (idx === -1) return null;

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/db.js';
 import { getBaseSupabaseClient, verifySupabaseToken } from '../services/supabaseClient.js';
+import { getSupabaseAdminClient } from '../services/supabaseAdmin.js';
 import { quotaService } from '../services/quotaService.js';
 import { auditService } from '../services/auditService.js';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
@@ -38,15 +39,91 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 1. If Supabase Auth Live Client is available
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanFullName = fullName.trim();
+
+    // 1. Live Supabase Auth via Admin Client (Auto-confirmed email for frictionless UX)
+    const adminSupabase = getSupabaseAdminClient();
     const liveSupabase = getBaseSupabaseClient();
+
+    if (adminSupabase && liveSupabase) {
+      // Create user in Supabase Auth with auto email confirmation
+      const { data: createData, error: createError } = await adminSupabase.auth.admin.createUser({
+        email: cleanEmail,
+        password,
+        user_metadata: {
+          full_name: cleanFullName,
+        },
+        email_confirm: true,
+      });
+
+      if (createError) {
+        if (createError.message?.toLowerCase().includes('already registered') || createError.message?.toLowerCase().includes('already exists')) {
+          res.status(400).json({
+            success: false,
+            error: 'Email này đã được đăng ký trên Supabase. Vui lòng đăng nhập hoặc sử dụng email khác.',
+          });
+          return;
+        }
+        res.status(400).json({
+          success: false,
+          error: createError.message || 'Không thể tạo tài khoản trên Supabase.',
+        });
+        return;
+      }
+
+      const user = createData.user;
+      if (!user) {
+        res.status(400).json({
+          success: false,
+          error: 'Không thể tạo người dùng Supabase.',
+        });
+        return;
+      }
+
+      // Automatically sign in to get active session token
+      const { data: signInData } = await liveSupabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+
+      const profile = db.ensureProfile(user.id, user.email || cleanEmail, cleanFullName);
+      const token = signInData?.session?.access_token || '';
+      const quota = quotaService.checkUserQuota(user.id);
+
+      auditService.log({
+        userId: user.id,
+        action: 'REGISTER_USER',
+        resourceType: 'profiles',
+        resourceId: user.id,
+        ipAddress: req.ip,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Đăng ký tài khoản thành công qua Supabase Auth.',
+        token,
+        user: {
+          id: user.id,
+          email: user.email || cleanEmail,
+          fullName: cleanFullName,
+          currentPlanId: profile.current_plan_id,
+          usedDocuments: profile.used_documents,
+          createdAt: user.created_at,
+        },
+        quota,
+      });
+      return;
+    }
+
+    // 2. Fallback to standard Supabase Client signUp if admin is unavailable
     if (liveSupabase) {
       const { data: authData, error: authError } = await liveSupabase.auth.signUp({
-        email: email.trim().toLowerCase(),
+        email: cleanEmail,
         password,
         options: {
           data: {
-            full_name: fullName.trim(),
+            full_name: cleanFullName,
           },
         },
       });
@@ -59,6 +136,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         return;
       }
 
+      const profile = db.ensureProfile(authData.user.id, authData.user.email || cleanEmail, cleanFullName);
       const token = authData.session?.access_token || '';
       const quota = quotaService.checkUserQuota(authData.user.id);
 
@@ -77,9 +155,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         user: {
           id: authData.user.id,
           email: authData.user.email,
-          fullName: fullName.trim(),
-          currentPlanId: 'FREE',
-          usedDocuments: 0,
+          fullName: cleanFullName,
+          currentPlanId: profile.current_plan_id,
+          usedDocuments: profile.used_documents,
           createdAt: authData.user.created_at,
         },
         quota,
@@ -87,11 +165,11 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 2. Unified Supabase Local Auth Engine
+    // 3. Unified Supabase Local Auth Engine fallback
     const { user, profile, session } = await db.createAuthUserAndProfile({
-      email,
+      email: cleanEmail,
       password,
-      fullName,
+      fullName: cleanFullName,
     });
 
     const quota = quotaService.checkUserQuota(user.id);
@@ -142,11 +220,13 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    const cleanEmail = email.trim().toLowerCase();
+
     // 1. If Supabase Auth Live Client is available
     const liveSupabase = getBaseSupabaseClient();
     if (liveSupabase) {
       const { data: authData, error: authError } = await liveSupabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
+        email: cleanEmail,
         password,
       });
 
@@ -159,7 +239,11 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       }
 
       const token = authData.session.access_token;
-      const profile = db.findProfileById(authData.user.id);
+      const profile = db.ensureProfile(
+        authData.user.id,
+        authData.user.email || cleanEmail,
+        (authData.user.user_metadata?.full_name as string) || 'User'
+      );
       const quota = quotaService.checkUserQuota(authData.user.id);
 
       auditService.log({
