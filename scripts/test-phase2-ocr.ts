@@ -8,6 +8,7 @@
  * 5. Credential Security & Zero API Key Leakage
  */
 
+process.env.USE_SIMULATED_OCR = 'true';
 import { azureOcrProvider } from '../server/services/ocr/AzureDocumentIntelligenceProvider.js';
 import { DataNormalizer } from '../server/services/ocr/normalizer.js';
 import { ocrWorker } from '../server/services/ocrWorker.js';
@@ -52,7 +53,7 @@ async function runPhase2Tests() {
   console.log('\n--- TEST SUITE 2: Azure AI OCR Provider Abstraction ---');
   {
     const dummyBuffer = Buffer.from('PDF_SAMPLE_BANK_STATEMENT');
-    const result = await azureOcrProvider.analyzeDocument(dummyBuffer, 'application/pdf');
+    const result = await azureOcrProvider.analyzeDocument(dummyBuffer, 'application/pdf', { forceSimulation: true });
 
     assert(result.provider === 'Azure AI Document Intelligence', 'Provider name is Azure AI Document Intelligence');
     assert(result.tables.length > 0, 'Extracted at least 1 table from bank statement');

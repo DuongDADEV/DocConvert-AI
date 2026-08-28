@@ -1,6 +1,15 @@
 import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem } from '../types';
 
-const API_BASE = '/api';
+const getApiBase = (): string => {
+  const envUrl = (import.meta as any).env?.VITE_API_URL;
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    const cleanUrl = envUrl.trim().replace(/\/+$/, '');
+    return cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
+  }
+  return '/api';
+};
+
+const API_BASE = getApiBase();
 
 class ApiClient {
   private getToken(): string | null {
