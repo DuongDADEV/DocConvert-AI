@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
+import { PDFDocument } from 'pdf-lib';
 import { db } from '../db/db.js';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
 import { ocrRateLimiter, exportRateLimiter } from '../middleware/rateLimiter.js';
@@ -182,7 +183,18 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
       req.userToken
     );
 
-    // Step 3: Create Document Record in Database
+    // Step 3: Calculate actual PDF Page Count before database record creation
+    let pageCount = 1;
+    if (fileType === 'PDF') {
+      try {
+        const pdfDoc = await PDFDocument.load(file.buffer);
+        pageCount = pdfDoc.getPageCount();
+      } catch (pdfErr) {
+        pageCount = 1;
+      }
+    }
+
+    // Create Document Record in Database
     const newDoc = db.createDocument({
       id: documentId,
       user_id: userId,
@@ -191,7 +203,7 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
       file_type: fileType,
       mime_type: file.mimetype,
       file_size: saved.fileSize,
-      page_count: 1,
+      page_count: pageCount,
       storage_bucket: saved.storageBucket,
       storage_path: saved.storagePath,
       document_type: 'BANK_STATEMENT',

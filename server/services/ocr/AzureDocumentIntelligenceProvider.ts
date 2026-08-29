@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
+import { PDFDocument } from 'pdf-lib';
 import {
   DocumentAIProvider,
   OCRAnalysisResult,
@@ -21,6 +22,20 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
     return (process.env.AZURE_DOCUMENT_INTELLIGENCE_KEY || '').trim();
   }
 
+  /**
+   * Reads configured MAX_PAGES_PER_CHUNK from environment variable or defaults to 2 (Azure Free F0 limit)
+   */
+  private getMaxPagesPerChunk(): number {
+    const envVal = process.env.AZURE_MAX_PAGES_PER_CHUNK;
+    if (envVal) {
+      const parsed = parseInt(envVal, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return 2; // Default F0 limit
+  }
+
   async analyzeDocument(
     fileBuffer: Buffer,
     mimeType: string,
@@ -31,19 +46,160 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
     const modelId = options?.modelId || 'prebuilt-layout';
     const isSimulationForced = process.env.USE_SIMULATED_OCR === 'true' || Boolean(options?.forceSimulation);
 
-    // 1. If Azure credentials exist and simulation is not forced, call Azure Document Intelligence API
-    if (endpoint && key && !isSimulationForced) {
-      // Direct call to Azure API - never silently catch & fake data
-      return await this.callAzureAPI(fileBuffer, mimeType, endpoint, key, modelId);
+    // 1. If Azure credentials do not exist or simulation is forced, return simulated result
+    if (!endpoint || !key || isSimulationForced) {
+      if (process.env.NODE_ENV === 'production' && !isSimulationForced) {
+        throw new Error('AZURE_DOCUMENT_INTELLIGENCE_CREDENTIALS_MISSING: Cannot process document in production without valid Azure AI credentials.');
+      }
+      return this.generateSimulatedBankingOCR(fileBuffer, modelId);
     }
 
-    // 2. If running in production without credentials or forced simulation, throw strict error
-    if (process.env.NODE_ENV === 'production' && !isSimulationForced) {
-      throw new Error('AZURE_DOCUMENT_INTELLIGENCE_CREDENTIALS_MISSING: Cannot process document in production without valid Azure AI credentials.');
+    // 2. Determine actual PDF Page Count via pdf-lib
+    const isPdf = mimeType === 'application/pdf' || fileBuffer.subarray(0, 4).toString() === '%PDF';
+    let totalPageCount = 1;
+    let pdfDoc: PDFDocument | null = null;
+
+    if (isPdf) {
+      try {
+        pdfDoc = await PDFDocument.load(fileBuffer);
+        totalPageCount = pdfDoc.getPageCount();
+      } catch (pdfErr: any) {
+        console.warn('[AzureProvider] Could not parse PDF with pdf-lib, falling back to single request:', pdfErr.message);
+      }
     }
 
-    // 3. High-fidelity Sandbox / Offline Simulation Engine (Only in local development/test mode without credentials or explicit test simulation)
-    return this.generateSimulatedBankingOCR(fileBuffer, modelId);
+    const maxPagesPerChunk = this.getMaxPagesPerChunk();
+
+    // 3. Single-chunk execution path: PDF <= maxPagesPerChunk or non-PDF image file
+    if (!pdfDoc || totalPageCount <= maxPagesPerChunk) {
+      const singleResult = await this.callAzureAPI(fileBuffer, mimeType, endpoint, key, modelId);
+      if (singleResult.metadata) {
+        singleResult.metadata.pageCount = Math.max(singleResult.pages.length, totalPageCount);
+      }
+      return singleResult;
+    }
+
+    // 4. Multi-chunk execution path: PDF > maxPagesPerChunk
+    const chunkCount = Math.ceil(totalPageCount / maxPagesPerChunk);
+    console.log(`[AzureProvider] Splitting ${totalPageCount}-page PDF into ${chunkCount} chunks (limit: ${maxPagesPerChunk} pages/chunk)`);
+
+    const chunkResults: OCRAnalysisResult[] = [];
+
+    for (let chunkIdx = 0; chunkIdx < chunkCount; chunkIdx++) {
+      const startPage = chunkIdx * maxPagesPerChunk;
+      const endPage = Math.min((chunkIdx + 1) * maxPagesPerChunk - 1, totalPageCount - 1);
+      const pageRangeStr = `${startPage + 1}-${endPage + 1}`;
+
+      console.log(`[AzureProvider] Processing chunk ${chunkIdx + 1}/${chunkCount} (pages ${pageRangeStr})...`);
+
+      let chunkBuffer: Buffer;
+      try {
+        const subPdf = await PDFDocument.create();
+        const pageIndices = Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
+        const copiedPages = await subPdf.copyPages(pdfDoc, pageIndices);
+        copiedPages.forEach((page) => subPdf.addPage(page));
+        const chunkBytes = await subPdf.save();
+        chunkBuffer = Buffer.from(chunkBytes);
+      } catch (splitErr: any) {
+        console.error(`[AzureProvider] Failed to create PDF chunk ${chunkIdx + 1}/${chunkCount}:`, splitErr.message);
+        throw new Error(`PDF Chunking Error (chunk ${chunkIdx + 1}): ${splitErr.message}`);
+      }
+
+      try {
+        const chunkResult = await this.callAzureAPI(chunkBuffer, 'application/pdf', endpoint, key, modelId);
+        console.log(`[AzureProvider] Chunk ${chunkIdx + 1}/${chunkCount} (pages ${pageRangeStr}) succeeded: ${chunkResult.pages.length} pages, ${chunkResult.tables.length} tables.`);
+        chunkResults.push(chunkResult);
+      } catch (azureErr: any) {
+        console.error(`[AzureProvider] Chunk ${chunkIdx + 1}/${chunkCount} (pages ${pageRangeStr}) failed:`, azureErr.message);
+        throw new Error(`Azure OCR processing failed on chunk ${chunkIdx + 1}/${chunkCount} (pages ${pageRangeStr}): ${this.sanitizeErrorMessage(azureErr.message)}`);
+      }
+    }
+
+    // 5. Merge all chunk results into a single OCRAnalysisResult
+    return this.mergeChunkResults(chunkResults, totalPageCount, maxPagesPerChunk, modelId);
+  }
+
+  /**
+   * Merges multiple chunk OCR results into a single unified OCRAnalysisResult.
+   * Remaps local page numbers to global page numbers and avoids tableIndex collisions.
+   */
+  private mergeChunkResults(
+    chunkResults: OCRAnalysisResult[],
+    totalPageCount: number,
+    maxPagesPerChunk: number,
+    modelId: string
+  ): OCRAnalysisResult {
+    const mergedPages: OCRPage[] = [];
+    const mergedTables: OCRExtractedTable[] = [];
+    const rawTextParts: string[] = [];
+    let globalTableIdx = 0;
+    let totalConfidenceSum = 0;
+    let confidenceCount = 0;
+
+    chunkResults.forEach((chunkRes, chunkIdx) => {
+      const pageOffset = chunkIdx * maxPagesPerChunk;
+
+      // 1. Merge Pages & Remap Page Numbers
+      chunkRes.pages.forEach((p) => {
+        const globalPageNum = pageOffset + p.pageNumber;
+        mergedPages.push({
+          ...p,
+          pageNumber: globalPageNum,
+        });
+        if (typeof p.confidence === 'number') {
+          totalConfidenceSum += p.confidence;
+          confidenceCount++;
+        }
+      });
+
+      if (chunkRes.rawText) {
+        rawTextParts.push(`--- Trang ${pageOffset + 1} đến ${pageOffset + chunkRes.pages.length} ---\n${chunkRes.rawText}`);
+      }
+
+      // 2. Merge Tables & Remap Page Numbers & Table Index
+      chunkRes.tables.forEach((t) => {
+        const globalTablePageNum = pageOffset + t.pageNumber;
+
+        // Remap bounding regions page numbers
+        const remappedBoundingRegions = t.boundingRegions?.map((b: any) => ({
+          ...b,
+          pageNumber: pageOffset + (b.pageNumber || 1),
+        }));
+
+        mergedTables.push({
+          ...t,
+          pageNumber: globalTablePageNum,
+          tableIndex: globalTableIdx++,
+          boundingRegions: remappedBoundingRegions,
+        });
+
+        totalConfidenceSum += t.confidence;
+        confidenceCount++;
+      });
+    });
+
+    mergedPages.sort((a, b) => a.pageNumber - b.pageNumber);
+    mergedTables.sort((a, b) => a.pageNumber - b.pageNumber || a.tableIndex - b.tableIndex);
+
+    const overallConfidence = confidenceCount > 0
+      ? Number((totalConfidenceSum / confidenceCount).toFixed(4))
+      : 0.95;
+
+    return {
+      provider: this.providerName,
+      modelId,
+      overallConfidence,
+      rawText: rawTextParts.join('\n\n'),
+      pages: mergedPages,
+      tables: mergedTables,
+      metadata: {
+        model: modelId,
+        pageCount: totalPageCount,
+        tableCount: mergedTables.length,
+        chunkCount: chunkResults.length,
+        maxPagesPerChunk,
+      },
+    };
   }
 
   private async callAzureAPI(

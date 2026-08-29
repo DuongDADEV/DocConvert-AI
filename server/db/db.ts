@@ -629,6 +629,15 @@ class DatabaseService {
     return doc;
   }
 
+  updateDocumentPageCount(userId: string, documentId: string, pageCount: number): DocumentRecord | null {
+    const doc = this.getUserDocumentById(userId, documentId);
+    if (!doc) return null;
+    doc.page_count = pageCount;
+    doc.updated_at = new Date().toISOString();
+    this.save();
+    return doc;
+  }
+
   softDeleteDocument(userId: string, documentId: string): boolean {
     const doc = this.getUserDocumentById(userId, documentId);
     if (!doc) return false;
@@ -735,6 +744,12 @@ class DatabaseService {
     }
 
     const now = new Date().toISOString();
+
+    // Update document page_count if OCR analysis contains page count information
+    if (Array.isArray(analysis.pages) && analysis.pages.length > 0) {
+      doc.page_count = analysis.pages.length;
+      doc.updated_at = now;
+    }
 
     // 2. Clear old OCR data for this document if any (idempotency)
     this.state.ocr_results = this.state.ocr_results.filter((r) => r.document_id !== documentId);

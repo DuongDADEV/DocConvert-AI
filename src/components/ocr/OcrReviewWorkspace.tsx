@@ -47,6 +47,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
 
   // Table & Editing State
   const [selectedTableIndex, setSelectedTableIndex] = useState(0);
+  const [selectedPageNumber, setSelectedPageNumber] = useState<number | 'ALL'>('ALL');
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
   const [editingCellId, setEditingCellId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -601,7 +602,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                   <div className="relative w-full h-full flex items-center justify-center">
                     {ocrData?.document.file_type === 'PDF' ? (
                       <iframe
-                        src={previewUrl}
+                        src={selectedPageNumber !== 'ALL' ? `${previewUrl}#page=${selectedPageNumber}` : previewUrl}
                         title="PDF Viewer"
                         className="w-full h-full rounded-lg border border-slate-800 bg-white"
                       />
@@ -661,25 +662,74 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
             <div className="lg:w-7/12 flex flex-col bg-slate-50 overflow-hidden">
               {/* TABLE CONTROLS & FILTER BAR */}
               <div className="p-4 bg-white border-b border-slate-200 space-y-3 shrink-0">
-                {/* Table Tabs if multiple tables */}
-                {ocrData?.tables && ocrData.tables.length > 1 && (
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                    {ocrData.tables.map((t, idx) => (
+                {/* Page Navigation Bar (Page 1 -> N) */}
+                {ocrData && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-slate-100">
+                    <span className="text-xs font-bold text-slate-600 mr-1 shrink-0 flex items-center gap-1">
+                      <FileText className="w-3.5 h-3.5 text-blue-600" />
+                      Trang:
+                    </span>
+                    <button
+                      onClick={() => {
+                        setSelectedPageNumber('ALL');
+                      }}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition shrink-0 ${
+                        selectedPageNumber === 'ALL'
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Tất cả ({ocrData.document?.page_count || ocrData.pages?.length || 1} trang)
+                    </button>
+                    {Array.from(
+                      { length: ocrData.document?.page_count || ocrData.pages?.length || 1 },
+                      (_, i) => i + 1
+                    ).map((pNum) => (
                       <button
-                        key={t.id}
+                        key={pNum}
                         onClick={() => {
-                          setSelectedTableIndex(idx);
-                          setSelectedCellId(null);
+                          setSelectedPageNumber(pNum);
+                          const firstTableIdxOnPage = ocrData.tables.findIndex((t) => t.pageNumber === pNum);
+                          if (firstTableIdxOnPage !== -1) {
+                            setSelectedTableIndex(firstTableIdxOnPage);
+                          }
                         }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition shrink-0 ${
-                          selectedTableIndex === idx
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition shrink-0 ${
+                          selectedPageNumber === pNum
                             ? 'bg-blue-600 text-white shadow-xs'
                             : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                         }`}
                       >
-                        Bảng #{idx + 1} (Trang {t.pageNumber} • {t.rowCount} dòng)
+                        Trang {pNum}
                       </button>
                     ))}
+                  </div>
+                )}
+
+                {/* Table Tabs if multiple tables */}
+                {ocrData?.tables && ocrData.tables.length > 1 && (
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                    {ocrData.tables
+                      .filter((t) => selectedPageNumber === 'ALL' || t.pageNumber === selectedPageNumber)
+                      .map((t) => {
+                        const originalIdx = ocrData.tables.findIndex((tb) => tb.id === t.id);
+                        return (
+                          <button
+                            key={t.id}
+                            onClick={() => {
+                              setSelectedTableIndex(originalIdx);
+                              setSelectedCellId(null);
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition shrink-0 ${
+                              selectedTableIndex === originalIdx
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            }`}
+                          >
+                            Bảng #{t.tableIndex + 1} (Trang {t.pageNumber} • {t.rowCount} dòng)
+                          </button>
+                        );
+                      })}
                   </div>
                 )}
 
