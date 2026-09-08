@@ -7,4 +7,6 @@ coverage/
 .env*
 !.env.example
 .data/storage/
+scratch/
+supabase/.temp/
 

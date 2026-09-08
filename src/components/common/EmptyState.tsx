@@ -11,7 +11,7 @@ interface EmptyStateProps {
 export const EmptyState: React.FC<EmptyStateProps> = ({
   title = 'Bạn chưa có tài liệu nào.',
   description = 'Thả file PDF scan hoặc hình ảnh vào đây để bắt đầu chuyển đổi sang Excel/Word.',
-  actionText = '+ Tải tài liệu mới',
+  actionText = 'Tải tài liệu mới',
   onAction,
 }) => {
   return (

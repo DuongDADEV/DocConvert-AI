@@ -1,4 +1,4 @@
-import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem } from '../types';
+import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem, OCRMetadataItem } from '../types';
 
 const getApiBase = (): string => {
   const envUrl = (import.meta as any).env?.VITE_API_URL;
@@ -160,6 +160,7 @@ class ApiClient {
       job: ProcessingJob | null;
       pages: any[];
       tables: any[];
+      documentMetadata?: OCRMetadataItem[];
       stats: any;
     }>(res);
   }

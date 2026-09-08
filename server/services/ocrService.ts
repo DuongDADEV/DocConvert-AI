@@ -12,7 +12,7 @@ export class AzureDocumentIntelligenceService implements IOCRService {
    * Queues a document for OCR and triggers the non-blocking background worker.
    */
   async queueDocumentForProcessing(userId: string, documentId: string): Promise<ProcessingJobRecord> {
-    const existingJob = db.getJobByDocumentId(userId, documentId);
+    const existingJob = await db.getJobByDocumentId(userId, documentId);
     if (existingJob) {
       // If it's already QUEUED or PROCESSING, return it
       if (existingJob.status === 'QUEUED' || existingJob.status === 'PROCESSING') {
@@ -26,7 +26,7 @@ export class AzureDocumentIntelligenceService implements IOCRService {
 
     const jobId = existingJob ? existingJob.id : crypto.randomUUID();
     const job = existingJob
-      ? db.updateProcessingJob(userId, jobId, {
+      ? (await db.updateProcessingJob(userId, jobId, {
           status: 'QUEUED',
           current_step: 'Đang xếp hàng chờ xử lý Azure AI Document Intelligence',
           progress: 10,
@@ -35,8 +35,8 @@ export class AzureDocumentIntelligenceService implements IOCRService {
           error_message: null,
           started_at: new Date().toISOString(),
           completed_at: null,
-        })!
-      : db.createProcessingJob({
+        }))!
+      : await db.createProcessingJob({
           id: jobId,
           document_id: documentId,
           user_id: userId,
@@ -47,25 +47,29 @@ export class AzureDocumentIntelligenceService implements IOCRService {
           started_at: new Date().toISOString(),
         });
 
-    db.updateDocumentStatus(userId, documentId, 'QUEUED');
+    await db.updateDocumentStatus(userId, documentId, 'QUEUED');
 
-    // Trigger asynchronous background worker
-    ocrWorker.enqueueJob(userId, job.id, documentId);
+    // Trigger non-blocking background worker execution
+    setImmediate(() => {
+      ocrWorker.processJob(userId, job.id, documentId).catch((err) => {
+        console.error(`[ocrService] Background worker error for job ${job.id}:`, err);
+      });
+    });
 
     return job;
   }
 
   async retryDocumentProcessing(userId: string, documentId: string): Promise<ProcessingJobRecord> {
-    const doc = db.getUserDocumentById(userId, documentId);
+    const doc = await db.getUserDocumentById(userId, documentId);
     if (!doc) {
       throw new Error('Tài liệu không tồn tại hoặc không có quyền truy cập.');
     }
 
-    let job = db.getJobByDocumentId(userId, documentId);
+    let job = await db.getJobByDocumentId(userId, documentId);
     const jobId = job ? job.id : crypto.randomUUID();
 
     job = job
-      ? db.updateProcessingJob(userId, jobId, {
+      ? (await db.updateProcessingJob(userId, jobId, {
           status: 'QUEUED',
           current_step: 'Đang xếp hàng thử lại xử lý OCR...',
           progress: 10,
@@ -74,8 +78,8 @@ export class AzureDocumentIntelligenceService implements IOCRService {
           error_message: null,
           started_at: new Date().toISOString(),
           completed_at: null,
-        })!
-      : db.createProcessingJob({
+        }))!
+      : await db.createProcessingJob({
           id: jobId,
           document_id: documentId,
           user_id: userId,
@@ -86,14 +90,19 @@ export class AzureDocumentIntelligenceService implements IOCRService {
           started_at: new Date().toISOString(),
         });
 
-    db.updateDocumentStatus(userId, documentId, 'QUEUED');
-    ocrWorker.enqueueJob(userId, jobId, documentId);
+    await db.updateDocumentStatus(userId, documentId, 'QUEUED');
+
+    setImmediate(() => {
+      ocrWorker.processJob(userId, jobId, documentId).catch((err) => {
+        console.error(`[ocrService] Retry background worker error for job ${jobId}:`, err);
+      });
+    });
 
     return job;
   }
 
   async getJobStatus(userId: string, jobId: string): Promise<ProcessingJobRecord | null> {
-    return db.getProcessingJob(userId, jobId);
+    return await db.getProcessingJob(userId, jobId);
   }
 }
 

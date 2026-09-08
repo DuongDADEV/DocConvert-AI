@@ -6,11 +6,11 @@ const router = Router();
 router.use(authMiddleware);
 
 // GET RECENT AUDIT LOGS FOR CURRENT USER
-router.get('/', (req: AuthenticatedRequest, res: Response): void => {
+router.get('/', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
     const limit = parseInt(req.query.limit as string) || 20;
-    const logs = auditService.getUserLogs(userId, limit);
+    const logs = await auditService.getUserLogs(userId, limit);
 
     res.json({
       success: true,

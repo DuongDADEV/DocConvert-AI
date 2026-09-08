@@ -88,18 +88,18 @@ export class ExcelExportEngine {
     const lowConfidenceThreshold = options.lowConfidenceThreshold ?? 0.70;
 
     // 1. Strict Ownership & Access Verification (RLS)
-    const doc = db.getUserDocumentById(userId, documentId);
+    const doc = await db.getUserDocumentById(userId, documentId);
     if (!doc) {
       throw new Error('Tài liệu không tồn tại hoặc bạn không có quyền truy cập.');
     }
 
-    const ocrData = db.getDocumentOcrResult(userId, documentId);
+    const ocrData = await db.getDocumentOcrResult(userId, documentId);
     if (!ocrData || !ocrData.tables || ocrData.tables.length === 0) {
       throw new Error('Tài liệu chưa có dữ liệu bảng trích xuất OCR để xuất Excel.');
     }
 
     // 2. Idempotency Check: Retrieve active export record if same options/state exists
-    const existingExport = db.findExistingExport(userId, documentId, 'XLSX', mode);
+    const existingExport = await db.findExistingExport(userId, documentId, 'XLSX', mode);
     if (existingExport) {
       // Check if file still exists in storage
       const fileCheck = await storageService.getFile(userId, `export_${existingExport.id}`);
@@ -507,7 +507,7 @@ export class ExcelExportEngine {
     );
 
     // 9. Persist Export Record into DB
-    const exportRecord = db.createExportRecord({
+    const exportRecord = await db.createExportRecord({
       id: exportId,
       user_id: userId,
       document_id: documentId,

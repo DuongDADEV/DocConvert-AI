@@ -46,9 +46,9 @@ async function testRealPdfChunking() {
 
   // Save to DB and test DB persistence
   console.log('\nSaving merged OCR result to Database for document', docId);
-  db.saveOcrAnalysis(userId, docId, result);
+  await db.saveOcrAnalysis(userId, docId, result);
 
-  const dbOcr = db.getDocumentOcrResult(userId, docId);
+  const dbOcr = await db.getDocumentOcrResult(userId, docId);
   console.log('DB Stored Pages Count:', dbOcr?.pages.length);
   console.log('DB Stored Document page_count:', dbOcr?.document.page_count);
   console.log('DB Stored Tables Count:', dbOcr?.tables.length);

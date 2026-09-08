@@ -17,10 +17,6 @@ export interface StoredFileData {
   filename: string;
 }
 
-// Memory/Mock Storage Store for Container Runtime / Offline Test Mode
-// Uses an isolated Map keyed by `bucket:userId:documentId:filename`
-const virtualStorageStore = new Map<string, { buffer: Buffer; mimeType: string; filename: string; path: string }>();
-
 class StorageService {
   private readonly BUCKET = 'documents';
 
@@ -56,35 +52,24 @@ class StorageService {
       throw new Error('Cảnh báo bảo mật: Phát hiện ký tự không hợp lệ trong đường dẫn tệp.');
     }
 
-    // 1. If Supabase is connected with live credentials
     const userClient = userToken ? createSupabaseUserClient(userToken) : null;
     const client = userClient || getSupabaseAdminClient() || getBaseSupabaseClient();
 
-    if (client) {
-      try {
-        const { error } = await client.storage
-          .from(this.BUCKET)
-          .upload(objectKey, buffer, {
-            contentType: mimeType,
-            upsert: true,
-          });
-
-        if (error) {
-          console.warn('Supabase storage upload error, falling back to storage memory engine:', error.message);
-        }
-      } catch (err) {
-        console.warn('Supabase storage exception:', err);
-      }
+    if (!client) {
+      throw new Error('Không thể kết nối dịch vụ lưu trữ Supabase Storage (Client không tồn tại).');
     }
 
-    // 2. Always persist to unified storage store
-    const storeKey = `${this.BUCKET}:${safeUserId}:${safeDocId}:${safeFilename}`;
-    virtualStorageStore.set(storeKey, {
-      buffer,
-      mimeType,
-      filename: safeFilename,
-      path: storagePath,
-    });
+    const { error } = await client.storage
+      .from(this.BUCKET)
+      .upload(objectKey, buffer, {
+        contentType: mimeType,
+        upsert: true,
+      });
+
+    if (error) {
+      console.error(`[StorageService] Supabase storage upload failed for ${objectKey}:`, error.message);
+      throw new Error(`Lưu trữ tệp vào Supabase Storage thất bại: ${error.message}`);
+    }
 
     return {
       storageBucket: this.BUCKET,
@@ -107,45 +92,47 @@ class StorageService {
     const safeUserId = this.sanitize(userId);
     const safeDocId = this.sanitize(documentId);
 
-    // 1. Try Supabase Storage SDK if connected
     const userClient = userToken ? createSupabaseUserClient(userToken) : null;
     const client = userClient || getSupabaseAdminClient() || getBaseSupabaseClient();
 
-    if (client) {
-      try {
-        const { data: listData } = await client.storage
-          .from(this.BUCKET)
-          .list(`${safeUserId}/${safeDocId}/original`);
-
-        if (listData && listData.length > 0) {
-          const fileName = listData[0].name;
-          const { data: downloadData, error: downloadErr } = await client.storage
-            .from(this.BUCKET)
-            .download(`${safeUserId}/${safeDocId}/original/${fileName}`);
-
-          if (!downloadErr && downloadData) {
-            const arrayBuf = await downloadData.arrayBuffer();
-            return {
-              buffer: Buffer.from(arrayBuf),
-              mimeType: downloadData.type || 'application/octet-stream',
-              filename: fileName,
-            };
-          }
-        }
-      } catch (err) {
-        // Continue to fallback
-      }
+    if (!client) {
+      console.error('[StorageService] Supabase client unavailable for getFile');
+      return null;
     }
 
-    // 2. Lookup in unified storage store with strict user prefix
-    for (const [key, value] of virtualStorageStore.entries()) {
-      if (key.startsWith(`${this.BUCKET}:${safeUserId}:${safeDocId}:`)) {
-        return {
-          buffer: value.buffer,
-          mimeType: value.mimeType,
-          filename: value.filename,
-        };
+    try {
+      const { data: listData, error: listErr } = await client.storage
+        .from(this.BUCKET)
+        .list(`${safeUserId}/${safeDocId}/original`);
+
+      if (listErr) {
+        console.error(`[StorageService] Failed to list files for ${safeDocId}:`, listErr.message);
+        return null;
       }
+
+      if (listData && listData.length > 0) {
+        const fileName = listData[0].name;
+        const { data: downloadData, error: downloadErr } = await client.storage
+          .from(this.BUCKET)
+          .download(`${safeUserId}/${safeDocId}/original/${fileName}`);
+
+        if (downloadErr) {
+          console.error(`[StorageService] Failed to download file for ${safeDocId}:`, downloadErr.message);
+          return null;
+        }
+
+        if (downloadData) {
+          const arrayBuf = await downloadData.arrayBuffer();
+          return {
+            buffer: Buffer.from(arrayBuf),
+            mimeType: downloadData.type || 'application/octet-stream',
+            filename: fileName,
+          };
+        }
+      }
+    } catch (err: any) {
+      console.error('[StorageService] Unexpected exception downloading file:', err.message);
+      return null;
     }
 
     return null;
@@ -212,13 +199,6 @@ class StorageService {
         }
       } catch (err) {
         console.warn('Storage deletion warning:', err);
-      }
-    }
-
-    // Remove from unified virtual storage
-    for (const key of virtualStorageStore.keys()) {
-      if (key.startsWith(`${this.BUCKET}:${safeUserId}:${safeDocId}:`)) {
-        virtualStorageStore.delete(key);
       }
     }
 

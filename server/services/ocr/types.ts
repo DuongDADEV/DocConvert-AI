@@ -43,6 +43,11 @@ export interface OCRExtractedTable {
   headers?: string[];
 }
 
+export interface OCRLine {
+  content: string;
+  polygon?: number[]; // [x1, y1, x2, y2, x3, y3, x4, y4]
+}
+
 export interface OCRPage {
   pageNumber: number;
   width?: number;
@@ -52,6 +57,82 @@ export interface OCRPage {
   wordsCount?: number;
   rawText?: string;
   confidence?: number;
+  lines?: OCRLine[];
+}
+
+export type SemanticType =
+  | 'ACCOUNT_HOLDER'
+  | 'ACCOUNT_NUMBER'
+  | 'CUSTOMER_ID'
+  | 'TAX_CODE'
+  | 'STATEMENT_FROM'
+  | 'STATEMENT_TO'
+  | 'STATEMENT_DATE'
+  | 'CURRENCY'
+  | 'ACCOUNT_TYPE'
+  | 'BRANCH'
+  | 'ADDRESS'
+  | 'OTHER';
+
+export type VisibilityClass = 'CORE' | 'ADDITIONAL' | 'REJECTED';
+
+export type MetadataSourceType = 'KEY_VALUE' | 'HEADER_LINE' | 'HEADER_TABLE';
+
+export interface OCRMetadataObservation {
+  rawLabel: string;
+  rawValue: string;
+  confidence: number;
+  sourcePage: number; // Remapped global page number
+  keyBoundingPolygon?: number[];   // [x1, y1, x2, y2, x3, y3, x4, y4]
+  valueBoundingPolygon?: number[]; // [x1, y1, x2, y2, x3, y3, x4, y4]
+  normalizedLabel?: string;
+  normalizedValueForMatch?: string;
+  chunkIndex?: number;
+  sourceType?: MetadataSourceType;
+  normalizedTop?: number;
+  normalizedBottom?: number;
+  semanticType?: SemanticType;
+  qualityScore?: number;
+}
+
+export interface OCRMetadataItem {
+  id?: string;
+  label: string;
+  value: string;
+  rawLabel: string;
+  rawValue: string;
+  confidence: number;
+  sourcePage: number;
+  keyBoundingPolygon?: number[];
+  valueBoundingPolygon?: number[];
+  occurrenceCount: number;
+  status: 'AUTO' | 'CONFLICT' | 'REVIEWED';
+  semanticType?: SemanticType;
+  qualityScore?: number;
+  visibilityClass?: VisibilityClass;
+  alternatives?: Array<{
+    rawLabel: string;
+    rawValue: string;
+    confidence: number;
+    sourcePage: number;
+  }>;
+}
+
+export interface MetadataFilterMetrics {
+  rawKeyValueCount: number;
+  headerLineCandidateCount: number;
+  headerTableCandidateCount: number;
+  filteredTableOverlapCount: number;
+  filteredTransactionPatternCount: number;
+  filteredEmptyCount: number;
+  filteredMalformedCount: number;
+  candidateCount: number;
+  nearDuplicateMergeCount: number;
+  canonicalCount: number;
+  coreCount: number;
+  additionalCount: number;
+  conflictCount: number;
+  rejectedCount: number;
 }
 
 export interface OCRAnalysisResult {
@@ -61,6 +142,9 @@ export interface OCRAnalysisResult {
   rawText: string;
   pages: OCRPage[];
   tables: OCRExtractedTable[];
+  rawMetadataObservations?: OCRMetadataObservation[];
+  documentMetadata?: OCRMetadataItem[];
+  metadataPipelineMetrics?: MetadataFilterMetrics;
   metadata?: Record<string, any>;
 }
 

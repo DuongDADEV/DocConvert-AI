@@ -87,11 +87,11 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         password,
       });
 
-      const profile = db.ensureProfile(user.id, user.email || cleanEmail, cleanFullName);
+      const profile = await db.ensureProfile(user.id, user.email || cleanEmail, cleanFullName);
       const token = signInData?.session?.access_token || '';
-      const quota = quotaService.checkUserQuota(user.id);
+      const quota = await quotaService.checkUserQuota(user.id);
 
-      auditService.log({
+      await auditService.log({
         userId: user.id,
         action: 'REGISTER_USER',
         resourceType: 'profiles',
@@ -136,9 +136,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         return;
       }
 
-      const profile = db.ensureProfile(authData.user.id, authData.user.email || cleanEmail, cleanFullName);
+      const profile = await db.ensureProfile(authData.user.id, authData.user.email || cleanEmail, cleanFullName);
       const token = authData.session?.access_token || '';
-      const quota = quotaService.checkUserQuota(authData.user.id);
+      const quota = await quotaService.checkUserQuota(authData.user.id);
 
       auditService.log({
         userId: authData.user.id,
@@ -168,11 +168,11 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     // 3. Unified Supabase Local Auth Engine fallback
     const { user, profile, session } = await db.createAuthUserAndProfile({
       email: cleanEmail,
-      password,
-      fullName: cleanFullName,
+      password_hash: password,
+      full_name: cleanFullName,
     });
 
-    const quota = quotaService.checkUserQuota(user.id);
+    const quota = await quotaService.checkUserQuota(user.id);
 
     auditService.log({
       userId: user.id,
@@ -239,14 +239,14 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       }
 
       const token = authData.session.access_token;
-      const profile = db.ensureProfile(
+      const profile = await db.ensureProfile(
         authData.user.id,
         authData.user.email || cleanEmail,
         (authData.user.user_metadata?.full_name as string) || 'User'
       );
-      const quota = quotaService.checkUserQuota(authData.user.id);
+      const quota = await quotaService.checkUserQuota(authData.user.id);
 
-      auditService.log({
+      await auditService.log({
         userId: authData.user.id,
         action: 'LOGIN_USER',
         resourceType: 'profiles',
@@ -282,7 +282,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     }
 
     const { profile, session } = result;
-    const quota = quotaService.checkUserQuota(profile.id);
+    const quota = await quotaService.checkUserQuota(profile.id);
 
     auditService.log({
       userId: profile.id,
@@ -321,7 +321,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
-    const quota = quotaService.checkUserQuota(user.id);
+    const quota = await quotaService.checkUserQuota(user.id);
 
     res.json({
       success: true,

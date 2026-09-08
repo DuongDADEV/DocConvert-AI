@@ -7,9 +7,9 @@ import { quotaService } from '../services/quotaService.js';
 const router = Router();
 
 // GET ALL PLANS (Public / Auth)
-router.get('/', (_req, res): void => {
+router.get('/', async (_req, res): Promise<void> => {
   try {
-    const plans = db.getPlans();
+    const plans = await db.getPlans();
     res.json({
       success: true,
       plans,
@@ -20,24 +20,21 @@ router.get('/', (_req, res): void => {
 });
 
 // UPGRADE PLAN (Authenticated, Mock Payment with clear tag)
-router.post('/upgrade', authMiddleware, (req: AuthenticatedRequest, res: Response): void => {
+router.post('/upgrade', authMiddleware, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
     const { planId } = req.body;
 
-    const plan = db.getPlanById(planId);
+    const plan = await db.getPlanById(planId);
     if (!plan) {
       res.status(400).json({ success: false, error: 'Gói cước không hợp lệ.' });
       return;
     }
 
-    // Update user's current plan and reset / boost quota
-    db.updateProfile(userId, {
-      current_plan_id: plan.id,
-      used_documents: 0, // Reset usage for new plan cycle
-    });
+    // Perform atomic plan upgrade across profiles, subscriptions, and usage with compensating rollback
+    await db.upgradeUserPlan(userId, plan.id, plan.duration_days, req.userToken);
 
-    auditService.log({
+    await auditService.log({
       userId,
       action: 'UPGRADE_PLAN',
       resourceType: 'plans',
@@ -49,15 +46,16 @@ router.post('/upgrade', authMiddleware, (req: AuthenticatedRequest, res: Respons
       },
     });
 
-    const updatedQuota = quotaService.checkUserQuota(userId);
+    const updatedQuota = await quotaService.checkUserQuota(userId);
 
     res.json({
       success: true,
       message: `Đã nâng cấp lên ${plan.name} thành công (Môi trường Thử nghiệm - Cổng thanh toán Sandbox).`,
       quota: updatedQuota,
     });
-  } catch (err) {
-    res.status(500).json({ success: false, error: 'Có lỗi xảy ra khi nâng cấp gói cước.' });
+  } catch (err: any) {
+    console.error('Upgrade plan error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Có lỗi xảy ra khi nâng cấp gói cước.' });
   }
 });
 

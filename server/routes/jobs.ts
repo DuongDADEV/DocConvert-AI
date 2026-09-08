@@ -6,12 +6,12 @@ const router = Router();
 router.use(authMiddleware);
 
 // GET PROCESSING JOB STATUS
-router.get('/:id', (req: AuthenticatedRequest, res: Response): void => {
+router.get('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
     const jobId = req.params.id;
 
-    const job = db.getProcessingJob(userId, jobId);
+    const job = await db.getProcessingJob(userId, jobId);
     if (!job) {
       res.status(404).json({
         success: false,

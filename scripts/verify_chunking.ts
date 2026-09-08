@@ -82,11 +82,11 @@ async function runChunkingVerificationTests() {
   // TEST 8 & 9: Database Persistence & User Isolation & document.page_count
   console.log('\n--- TEST 8-9: Database Record & Page Count ---');
   const testDocId = `doc_verify_chunk_${Date.now()}`;
-  const docRecord = db.createDocument({
+  const docRecord = await db.createDocument({
     id: testDocId,
     user_id: testUserId,
-    original_filename: 'sao_ke_8_trang_test.pdf',
-    file_name: 'sao_ke_8_trang_test.pdf',
+    original_filename: 'test-8pages.pdf',
+    file_name: 'test-8pages.pdf',
     file_type: 'PDF',
     mime_type: 'application/pdf',
     file_size: pdf8Buf.length,
@@ -97,9 +97,9 @@ async function runChunkingVerificationTests() {
     status: 'PROCESSING',
   });
 
-  db.saveOcrAnalysis(testUserId, testDocId, res8);
+  await db.saveOcrAnalysis(testUserId, testDocId, res8);
 
-  const storedOcr = db.getDocumentOcrResult(testUserId, testDocId);
+  const storedOcr = await db.getDocumentOcrResult(testUserId, testDocId);
   console.log(`Stored DB Pages count: ${storedOcr?.pages.length}`);
   console.log(`Stored DB Document page_count: ${storedOcr?.document.page_count}`);
   console.log(`Stored DB Tables count: ${storedOcr?.tables.length}`);

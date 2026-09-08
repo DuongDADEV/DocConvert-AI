@@ -8,8 +8,10 @@ import {
   OCRExtractedRow,
   OCRExtractedCell,
   OCRPage,
+  OCRMetadataObservation,
 } from './types.js';
 import { DataNormalizer } from './normalizer.js';
+import { MetadataFilterEngine } from './metadataFilterEngine.js';
 
 export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
   readonly providerName = 'Azure AI Document Intelligence';
@@ -131,6 +133,7 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
   ): OCRAnalysisResult {
     const mergedPages: OCRPage[] = [];
     const mergedTables: OCRExtractedTable[] = [];
+    const mergedRawObservations: OCRMetadataObservation[] = [];
     const rawTextParts: string[] = [];
     let globalTableIdx = 0;
     let totalConfidenceSum = 0;
@@ -176,10 +179,33 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
         totalConfidenceSum += t.confidence;
         confidenceCount++;
       });
+
+      // 3. Merge Raw KeyValuePair Observations & Remap Page Numbers
+      chunkRes.rawMetadataObservations?.forEach((obs) => {
+        mergedRawObservations.push({
+          ...obs,
+          sourcePage: pageOffset + obs.sourcePage,
+          chunkIndex: chunkIdx,
+        });
+      });
     });
 
     mergedPages.sort((a, b) => a.pageNumber - b.pageNumber);
     mergedTables.sort((a, b) => a.pageNumber - b.pageNumber || a.tableIndex - b.tableIndex);
+
+    // 4. Run Metadata Filter Engine to deduce canonical metadata and metrics
+    const filterResult = MetadataFilterEngine.processObservations(mergedRawObservations, mergedTables, mergedPages);
+    console.log(
+      `[MetadataPipeline] RawKV=${filterResult.metrics.rawKeyValueCount}, ` +
+      `HeaderLines=${filterResult.metrics.headerLineCandidateCount}, ` +
+      `HeaderTables=${filterResult.metrics.headerTableCandidateCount}, ` +
+      `Candidates=${filterResult.metrics.candidateCount}, ` +
+      `Canonical=${filterResult.metrics.canonicalCount}, ` +
+      `Core=${filterResult.metrics.coreCount}, ` +
+      `Additional=${filterResult.metrics.additionalCount}, ` +
+      `Conflicts=${filterResult.metrics.conflictCount}, ` +
+      `Rejected=${filterResult.metrics.rejectedCount}`
+    );
 
     const overallConfidence = confidenceCount > 0
       ? Number((totalConfidenceSum / confidenceCount).toFixed(4))
@@ -192,6 +218,9 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
       rawText: rawTextParts.join('\n\n'),
       pages: mergedPages,
       tables: mergedTables,
+      rawMetadataObservations: mergedRawObservations,
+      documentMetadata: filterResult.canonicalMetadata,
+      metadataPipelineMetrics: filterResult.metrics,
       metadata: {
         model: modelId,
         pageCount: totalPageCount,
@@ -210,9 +239,9 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
     modelId: string
   ): Promise<OCRAnalysisResult> {
     const cleanEndpoint = endpoint.replace(/\/+$/, '');
-    // GA Microsoft Document Intelligence v4.0 REST API
+    // GA Microsoft Document Intelligence v4.0 REST API with keyValuePairs enabled
     const apiVersion = '2024-11-30';
-    const analyzeUrl = `${cleanEndpoint}/documentintelligence/documentModels/${modelId}:analyze?api-version=${apiVersion}`;
+    const analyzeUrl = `${cleanEndpoint}/documentintelligence/documentModels/${modelId}:analyze?api-version=${apiVersion}&features=keyValuePairs`;
 
     const headers: Record<string, string> = {
       'Ocp-Apim-Subscription-Key': key,
@@ -339,6 +368,13 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
     // Parse Pages
     if (Array.isArray(analyzeResult.pages)) {
       for (const p of analyzeResult.pages) {
+        const pageLines = Array.isArray(p.lines)
+          ? p.lines.map((l: any) => ({
+              content: l.content || '',
+              polygon: l.polygon,
+            }))
+          : undefined;
+
         pages.push({
           pageNumber: p.pageNumber,
           width: p.width,
@@ -347,6 +383,7 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
           linesCount: p.lines?.length || 0,
           wordsCount: p.words?.length || 0,
           rawText: p.lines?.map((l: any) => l.content).join('\n') || '',
+          lines: pageLines,
         });
       }
     }
@@ -417,6 +454,28 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
       });
     }
 
+    // Parse KeyValuePairs into Raw Metadata Observations
+    const rawMetadataObservations: OCRMetadataObservation[] = [];
+    if (Array.isArray(analyzeResult.keyValuePairs)) {
+      for (const kv of analyzeResult.keyValuePairs) {
+        const rawLabel = kv.key?.content;
+        const rawValue = kv.value?.content;
+        if (!rawLabel) continue;
+
+        const localPage = kv.value?.boundingRegions?.[0]?.pageNumber || kv.key?.boundingRegions?.[0]?.pageNumber || 1;
+        rawMetadataObservations.push({
+          rawLabel,
+          rawValue: rawValue || '',
+          confidence: typeof kv.confidence === 'number' ? kv.confidence : 0.95,
+          sourcePage: localPage,
+          keyBoundingPolygon: kv.key?.boundingRegions?.[0]?.polygon,
+          valueBoundingPolygon: kv.value?.boundingRegions?.[0]?.polygon,
+        });
+      }
+    }
+
+    const filterResult = MetadataFilterEngine.processObservations(rawMetadataObservations, tables, pages);
+
     return {
       provider: this.providerName,
       modelId,
@@ -424,6 +483,9 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
       rawText,
       pages,
       tables,
+      rawMetadataObservations,
+      documentMetadata: filterResult.canonicalMetadata,
+      metadataPipelineMetrics: filterResult.metrics,
       metadata: {
         model: modelId,
         pageCount: pages.length,

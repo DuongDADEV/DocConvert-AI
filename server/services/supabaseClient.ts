@@ -62,6 +62,26 @@ export function createSupabaseUserClient(accessToken: string): SupabaseClient | 
 }
 
 /**
+ * 3. Service-Role Admin Supabase Client
+ * Trusted client for server-side background operations (e.g. ocrWorker)
+ */
+let adminClient: SupabaseClient | null = null;
+
+export function getSupabaseAdminClient(): SupabaseClient {
+  const { url, serviceRoleKey, anonKey } = getSupabaseConfig();
+  const keyToUse = serviceRoleKey || anonKey;
+  if (!adminClient && url && keyToUse) {
+    adminClient = createClient(url, keyToUse, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+  }
+  return adminClient!;
+}
+
+/**
  * 3. Verify Supabase Session / Access Token
  * Calls Supabase Auth API to authenticate user.
  * In local/test mode without cloud credentials, validates against local auth state.
@@ -82,7 +102,7 @@ export async function verifySupabaseToken(accessToken: string): Promise<Authenti
     try {
       const { data, error } = await liveClient.auth.getUser(accessToken);
       if (!error && data?.user) {
-        const profile = db.findProfileById(data.user.id);
+        const profile = await db.findProfileById(data.user.id);
         return {
           id: data.user.id,
           email: data.user.email || '',

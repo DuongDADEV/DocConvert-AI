@@ -115,12 +115,52 @@ export interface OCRStats {
   requiresReview: boolean;
 }
 
+export type SemanticType =
+  | 'ACCOUNT_HOLDER'
+  | 'ACCOUNT_NUMBER'
+  | 'CUSTOMER_ID'
+  | 'STATEMENT_FROM'
+  | 'STATEMENT_TO'
+  | 'CURRENCY'
+  | 'ACCOUNT_TYPE'
+  | 'BRANCH'
+  | 'ADDRESS'
+  | 'TAX_CODE'
+  | 'STATEMENT_DATE'
+  | 'OTHER';
+
+export type VisibilityClass = 'CORE' | 'ADDITIONAL' | 'REJECTED';
+
+export interface OCRMetadataItem {
+  id?: string;
+  label: string;
+  value: string;
+  rawLabel: string;
+  rawValue: string;
+  confidence: number;
+  qualityScore?: number;
+  semanticType?: SemanticType;
+  visibilityClass?: VisibilityClass;
+  occurrenceCount?: number;
+  status?: 'AUTO' | 'CONFLICT' | 'FILTERED' | 'MANUAL';
+  sourcePage: number;
+  keyBoundingPolygon?: number[];
+  valueBoundingPolygon?: number[];
+  alternatives?: Array<{
+    rawLabel: string;
+    rawValue: string;
+    confidence: number;
+    sourcePage: number;
+  }>;
+}
+
 export interface DocumentOCRData {
   document: DocumentItem;
   job?: ProcessingJob | null;
   pages: OCRPageResult[];
   tables: ExtractedTable[];
   metadata?: Record<string, any>;
+  documentMetadata?: OCRMetadataItem[];
   stats: OCRStats;
 }
 

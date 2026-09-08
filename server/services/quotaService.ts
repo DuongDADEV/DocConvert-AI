@@ -15,8 +15,8 @@ export class QuotaService {
    * Check if user is allowed to upload another document.
    * Strict server-side verification: never trust client values.
    */
-  checkUserQuota(userId: string): QuotaStatus {
-    const user = db.findProfileById(userId);
+  async checkUserQuota(userId: string): Promise<QuotaStatus> {
+    const user = await db.findProfileById(userId);
     if (!user) {
       return {
         allowed: false,
@@ -29,7 +29,7 @@ export class QuotaService {
       };
     }
 
-    const plan = db.getPlanById(user.current_plan_id) || {
+    const plan = (await db.getPlanById(user.current_plan_id)) || {
       id: 'FREE',
       name: 'Gói Miễn Phí (Free)',
       document_quota: 3,
@@ -56,14 +56,14 @@ export class QuotaService {
   /**
    * Atomically consumes one document quota slot.
    */
-  consumeQuota(userId: string): QuotaStatus {
-    const status = this.checkUserQuota(userId);
+  async consumeQuota(userId: string): Promise<QuotaStatus> {
+    const status = await this.checkUserQuota(userId);
     if (!status.allowed) {
       throw new Error(status.message || 'Đã vượt quá hạn mức tài liệu');
     }
 
-    db.incrementUserDocUsage(userId);
-    return this.checkUserQuota(userId);
+    await db.updateProfileUsage(userId, status.used + 1);
+    return await this.checkUserQuota(userId);
   }
 }
 

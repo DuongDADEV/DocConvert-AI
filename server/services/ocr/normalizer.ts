@@ -14,12 +14,33 @@ export class DataNormalizer {
    * 3. NUMBER: pure integer/decimal or transaction references
    * 4. TEXT: general strings
    */
-  static normalizeCell(rawValue: string): NormalizedResult {
+  static normalizeCell(rawValue: string, explicitType?: CellType): NormalizedResult {
     const raw = (rawValue || '').trim();
     if (!raw) {
-      return { rawValue: '', normalizedValue: '', cellType: 'TEXT' };
+      return { rawValue: '', normalizedValue: '', cellType: explicitType || 'TEXT' };
     }
 
+    // Handle user-specified explicit types
+    if (explicitType === 'MONEY') {
+      const moneyNorm = this.tryNormalizeMoney(raw);
+      return { rawValue: raw, normalizedValue: moneyNorm || raw, cellType: 'MONEY' };
+    }
+
+    if (explicitType === 'DATE') {
+      const dateNorm = this.tryNormalizeDate(raw);
+      return { rawValue: raw, normalizedValue: dateNorm || raw, cellType: 'DATE' };
+    }
+
+    if (explicitType === 'NUMBER') {
+      const numberNorm = this.tryNormalizeNumber(raw);
+      return { rawValue: raw, normalizedValue: numberNorm || raw, cellType: 'NUMBER' };
+    }
+
+    if (explicitType === 'TEXT') {
+      return { rawValue: raw, normalizedValue: raw, cellType: 'TEXT' };
+    }
+
+    // Auto-inference when explicitType is not specified
     // 1. Try Date normalization
     const dateNorm = this.tryNormalizeDate(raw);
     if (dateNorm) {

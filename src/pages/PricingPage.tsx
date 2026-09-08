@@ -11,7 +11,7 @@ interface PricingPageProps {
 }
 
 export const PricingPage: React.FC<PricingPageProps> = ({ onNavigate }) => {
-  const { user, quota, updateQuota, isAuthenticated } = useAuth();
+  const { user, quota, updateQuota, refreshProfile, isAuthenticated } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [upgradingPlanId, setUpgradingPlanId] = useState<string | null>(null);
@@ -50,6 +50,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onNavigate }) => {
         if (res.quota) {
           updateQuota(res.quota);
         }
+        await refreshProfile();
       }
     } catch (err: any) {
       setError(err.message || 'Có lỗi xảy ra khi nâng cấp gói.');
