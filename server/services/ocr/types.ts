@@ -18,7 +18,8 @@ export interface OCRExtractedCell {
   rawValue: string;
   normalizedValue?: string;
   cellType: CellType;
-  confidence: number;
+  confidence: number | null;
+  confidenceSource?: 'AZURE_WORD_AGGREGATE' | 'AZURE_CELL' | 'EMPTY_CELL' | 'UNAVAILABLE';
   isReviewed?: boolean;
   kind?: 'content' | 'rowHeader' | 'columnHeader';
   boundingPolygon?: number[]; // [x1, y1, x2, y2, x3, y3, x4, y4]

@@ -1,4 +1,4 @@
-import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem, OCRMetadataItem } from '../types';
+import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem, OCRMetadataItem, UnifiedTransactionTable } from '../types';
 
 const getApiBase = (): string => {
   const envUrl = (import.meta as any).env?.VITE_API_URL;
@@ -161,6 +161,7 @@ class ApiClient {
       pages: any[];
       tables: any[];
       documentMetadata?: OCRMetadataItem[];
+      unifiedTransactionTable?: UnifiedTransactionTable | null;
       stats: any;
     }>(res);
   }
@@ -182,6 +183,14 @@ class ApiClient {
       method: 'PUT',
       headers: this.getHeaders(),
       body: JSON.stringify(updates),
+    });
+    return this.handleResponse<{ success: boolean; message: string; cell: any }>(res);
+  }
+
+  async confirmExtractedCell(documentId: string, cellId: string) {
+    const res = await fetch(`${API_BASE}/documents/${documentId}/cells/${cellId}/confirm-review`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
     });
     return this.handleResponse<{ success: boolean; message: string; cell: any }>(res);
   }

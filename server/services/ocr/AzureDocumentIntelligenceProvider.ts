@@ -360,6 +360,77 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
     return sanitized.replace(/Ocp-Apim-Subscription-Key[:=]\s*[^\s,;&]+/gi, 'Ocp-Apim-Subscription-Key=[REDACTED]');
   }
 
+  /**
+   * Links a table cell to its contained words in the same Azure response using text span offsets.
+   */
+  private getWordsForCell(cell: any, pageWords: any[]): any[] {
+    const spans = cell.spans || [];
+    if (spans.length === 0 || !pageWords || pageWords.length === 0) return [];
+    const matched: any[] = [];
+    for (const span of spans) {
+      const sStart = span.offset;
+      const sEnd = span.offset + span.length;
+      for (const w of pageWords) {
+        const wStart = w.span?.offset;
+        const wEnd = wStart + (w.span?.length || 0);
+        if (wStart >= sStart && wEnd <= sEnd) {
+          matched.push(w);
+        }
+      }
+    }
+    return matched;
+  }
+
+  /**
+   * Derives truthful optical cell confidence from matched Azure words based on cell structure.
+   */
+  private deriveCellConfidence(
+    cell: any,
+    matchedWords: any[],
+    normalizedCellType: string
+  ): { confidence: number | null; source: 'AZURE_WORD_AGGREGATE' | 'AZURE_CELL' | 'EMPTY_CELL' | 'UNAVAILABLE' } {
+    // If Azure explicitly provided a cell confidence (rare/future models), honor it directly
+    if (typeof cell.confidence === 'number') {
+      return { confidence: Number(cell.confidence.toFixed(4)), source: 'AZURE_CELL' };
+    }
+
+    const raw = cell.content?.trim() || '';
+
+    // 1. Empty cells: Valid blank cell in table (e.g. empty Debit/Credit)
+    if (!raw) {
+      return { confidence: null, source: 'EMPTY_CELL' };
+    }
+
+    // 2. Non-empty cell but no words matched from Azure
+    if (!matchedWords || matchedWords.length === 0) {
+      return { confidence: null, source: 'UNAVAILABLE' };
+    }
+
+    const wordConfs: number[] = matchedWords
+      .map((w: any) => (typeof w.confidence === 'number' ? w.confidence : 0.95));
+
+    // 3. Headers (first row or kind columnHeader/rowHeader): use MEAN
+    const isHeader = cell.rowIndex === 0 || cell.kind === 'columnHeader' || cell.kind === 'rowHeader';
+    if (isHeader) {
+      const mean = wordConfs.reduce((a, b) => a + b, 0) / wordConfs.length;
+      return { confidence: Number(mean.toFixed(4)), source: 'AZURE_WORD_AGGREGATE' };
+    }
+
+    // 4. Content cells:
+    // Short structured cells (Money, Date, Number, or short text <= 3 words): use MIN
+    const isStructured = normalizedCellType === 'MONEY' || normalizedCellType === 'DATE' || normalizedCellType === 'NUMBER';
+    const isShortCell = matchedWords.length <= 3 && raw.length <= 35;
+
+    if (isStructured || isShortCell) {
+      const min = Math.min(...wordConfs);
+      return { confidence: Number(min.toFixed(4)), source: 'AZURE_WORD_AGGREGATE' };
+    } else {
+      // Long free text (Description, Narrative): use MEAN to avoid false positives on single minor tokens
+      const mean = wordConfs.reduce((a, b) => a + b, 0) / wordConfs.length;
+      return { confidence: Number(mean.toFixed(4)), source: 'AZURE_WORD_AGGREGATE' };
+    }
+  }
+
   private parseAzureAnalyzeResult(analyzeResult: any, modelId: string): OCRAnalysisResult {
     const rawText = analyzeResult.content || '';
     const pages: OCRPage[] = [];
@@ -388,6 +459,16 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
       }
     }
 
+    // Build word lookup by page
+    const wordsByPage = new Map<number, any[]>();
+    if (Array.isArray(analyzeResult.pages)) {
+      for (const p of analyzeResult.pages) {
+        if (Array.isArray(p.words)) {
+          wordsByPage.set(p.pageNumber, p.words);
+        }
+      }
+    }
+
     // Parse Tables
     if (Array.isArray(analyzeResult.tables)) {
       analyzeResult.tables.forEach((t: any, tableIdx: number) => {
@@ -404,9 +485,15 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
           for (const c of t.cells) {
             const raw = c.content || '';
             const normalized = DataNormalizer.normalizeCell(raw);
-            const conf = typeof c.confidence === 'number' ? c.confidence : 0.95;
-            totalConfidence += conf;
-            cellCount++;
+            const cellPageNum = c.boundingRegions?.[0]?.pageNumber || pageNum;
+            const pageWords = wordsByPage.get(cellPageNum) || [];
+            const matchedWords = this.getWordsForCell(c, pageWords);
+            const confResult = this.deriveCellConfidence(c, matchedWords, normalized.cellType);
+
+            if (typeof confResult.confidence === 'number') {
+              totalConfidence += confResult.confidence;
+              cellCount++;
+            }
 
             const extractedCell: OCRExtractedCell = {
               rowIndex: c.rowIndex,
@@ -416,7 +503,8 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
               rawValue: raw,
               normalizedValue: normalized.normalizedValue,
               cellType: normalized.cellType,
-              confidence: conf,
+              confidence: confResult.confidence,
+              confidenceSource: confResult.source,
               kind: c.kind || (c.rowIndex === 0 ? 'columnHeader' : 'content'),
               boundingPolygon: c.boundingRegions?.[0]?.polygon,
             };

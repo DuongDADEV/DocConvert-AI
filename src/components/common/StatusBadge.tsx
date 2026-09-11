@@ -10,8 +10,11 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
   const isSm = size === 'sm';
   const sizeClasses = isSm ? 'text-xs px-2.5 py-0.5' : 'text-sm px-3 py-1';
 
-  switch (status) {
+  const normalizedStatus = (status || '').toUpperCase();
+
+  switch (normalizedStatus) {
     case 'READY':
+    case 'COMPLETED':
       return (
         <span
           id={`status-badge-${status}`}
@@ -36,6 +39,8 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
     case 'PROCESSING':
     case 'PARSING':
     case 'VALIDATING':
+    case 'VALIDATING_RESULT':
+    case 'UPLOADING':
       return (
         <span
           id={`status-badge-${status}`}
@@ -47,6 +52,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
       );
 
     case 'QUEUED':
+    case 'PENDING':
       return (
         <span
           id={`status-badge-${status}`}

@@ -1,17 +1,15 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   X,
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
-  Plus,
   Trash2,
   Edit2,
   Check,
   Search,
   Filter,
   ShieldCheck,
-  Calculator,
   Download,
   FileSpreadsheet,
   FileText,
@@ -25,7 +23,7 @@ import {
   AlertCircle,
   GripVertical,
 } from 'lucide-react';
-import { DocumentItem, DocumentOCRData, ExtractedTable, ExtractedRow, ExtractedCell, OCRMetadataItem } from '../../types';
+import { DocumentItem, DocumentOCRData, ExtractedTable, ExtractedRow, ExtractedCell, OCRMetadataItem, UnifiedTransactionTable, UnifiedRow, UnifiedCell } from '../../types';
 import { api } from '../../services/api';
 import { StatusBadge } from '../common/StatusBadge';
 import { LoadingSpinner } from '../common/LoadingSpinner';
@@ -68,6 +66,55 @@ const CORE_PRIORITY_ORDER: Record<string, number> = {
   BRANCH: 8,
   ADDRESS: 9,
   STATEMENT_DATE: 10,
+};
+
+// Human-readable explanations for backend quality reason codes
+export const QUALITY_REASON_LABELS: Record<string, string> = {
+  LOW_OCR_CONFIDENCE: 'OCR chưa chắc chắn với nội dung này',
+  MEDIUM_OCR_CONFIDENCE: 'Độ tin cậy OCR mức trung bình',
+  OCR_CONFIDENCE_UNAVAILABLE: 'Không có dữ liệu độ tin cậy OCR cho ô có nội dung',
+  ALPHA_IN_MONEY: 'Giá trị tiền có ký tự chữ bất thường',
+  LEADING_NOISE: 'Có ký tự bất thường ở đầu giá trị',
+  TRAILING_SEPARATOR: 'Có dấu phân cách bất thường ở cuối giá trị',
+  MULTIPLE_SEPARATOR_NOISE: 'Có dấu phân cách bất thường',
+  FORMAT_OUTLIER: 'Định dạng khác với phần lớn dữ liệu trong cột',
+  REFERENCE_STRUCTURE_OUTLIER: 'Cấu trúc mã khác với phần lớn dữ liệu trong cột',
+  POSSIBLE_CHARACTER_CONFUSION: 'Có khả năng OCR nhầm ký tự',
+  DATE_TEXT_CONTAMINATION: 'Chứa văn bản lạ trong ô ngày tháng',
+  INVALID_DATE_STRUCTURE: 'Cấu trúc ngày tháng không hợp lệ',
+  DATE_FORMAT_OUTLIER: 'Định dạng ngày khác với phần lớn dữ liệu trong cột',
+  STT_TEXT_CONTAMINATION: 'Chứa văn bản trong ô số thứ tự',
+  STT_NON_INTEGER: 'Số thứ tự không phải số nguyên',
+  CORRUPT_CHARACTERS: 'Chứa ký tự điều khiển hoặc ký tự lạ',
+};
+
+export const formatQualityReason = (reason: { code: string; message?: string }): string => {
+  return QUALITY_REASON_LABELS[reason.code] || reason.message || reason.code;
+};
+
+/**
+ * Shared single-source predicate for generic human review.
+ * A cell requires human review IF AND ONLY IF:
+ * 1. It is not a placeholder cell
+ * 2. It has not been reviewed by a human (isReviewed !== true)
+ * 3. Its machine quality assessment severity is WARNING or CRITICAL
+ */
+export const isUnifiedCellNeedsReview = (cell: UnifiedCell | any): boolean => {
+  if (!cell || cell.isPlaceholder) return false;
+  if (cell.isReviewed === true) return false;
+  const severity = cell.qualityAssessment?.severity;
+  return severity === 'WARNING' || severity === 'CRITICAL';
+};
+
+// Backwards-compatible alias for existing test scripts
+export const isUnifiedCellReviewWorthy = isUnifiedCellNeedsReview;
+
+/**
+ * Legacy fallback predicate for physical tables without unified quality assessment.
+ */
+export const isLegacyCellReviewWorthy = (cell: ExtractedCell | any): boolean => {
+  if (!cell || cell.isPlaceholder) return false;
+  return !cell.isReviewed && typeof cell.confidence === 'number' && cell.confidence < 0.85;
 };
 
 // 3-tier dark-mode compatible confidence styling
@@ -122,6 +169,19 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   const [splitPercent, setSplitPercent] = useState<number>(40);
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
+  // DOM Refs for Split Container and Two-Way Horizontal Scroll Synchronization
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const horizontalScrollbarRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const isSyncingScrollRef = useRef<'table' | 'bar' | null>(null);
+  const latestClientXRef = useRef<number>(0);
+  const rafRef = useRef<number | null>(null);
+
+  // Dynamic real scroll metrics for bottom sticky horizontal scrollbar
+  const [tableScrollWidth, setTableScrollWidth] = useState<number>(0);
+  const [hasHorizontalOverflow, setHasHorizontalOverflow] = useState<boolean>(false);
+
   // Table & Editing State
   const [selectedTableIndex, setSelectedTableIndex] = useState(0);
   const [selectedPageNumber, setSelectedPageNumber] = useState<number | 'ALL'>('ALL');
@@ -130,14 +190,12 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   const [editValue, setEditValue] = useState('');
   const [editType, setEditType] = useState<'TEXT' | 'MONEY' | 'DATE' | 'NUMBER'>('TEXT');
   const [isSavingCell, setIsSavingCell] = useState(false);
+  const [confirmingCellId, setConfirmingCellId] = useState<string | null>(null);
 
   // Filter & Search State
   const [filterLowConfidenceOnly, setFilterLowConfidenceOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Add Row State
-  const [isAddingRow, setIsAddingRow] = useState(false);
-  const [newRowValues, setNewRowValues] = useState<string[]>([]);
 
   // Action States
   const [isRetryingOcr, setIsRetryingOcr] = useState(false);
@@ -149,20 +207,21 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   const [showAdditionalMetadata, setShowAdditionalMetadata] = useState(false);
 
   // --- 1. LOAD OCR DATA ---
-  const loadOcrData = useCallback(async () => {
-    setIsLoading(true);
+  const loadOcrData = useCallback(async (silent = false) => {
+    if (!silent) setIsLoading(true);
     setError(null);
     try {
       const res = await api.getDocumentOcrResult(documentId);
       if (res.success) {
         setOcrData(res as DocumentOCRData);
       } else {
-        setError('Không thể tải dữ liệu trích xuất OCR.');
+        if (!silent) setError('Không thể tải dữ liệu trích xuất OCR.');
       }
     } catch (err: any) {
-      setError(err.message || 'Lỗi khi tải dữ liệu đối soát.');
+      if (!silent) setError(err.message || 'Lỗi khi tải dữ liệu đối soát.');
+      throw err;
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, [documentId]);
 
@@ -204,7 +263,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
         .getDocumentBlob(documentId)
         .then((blob) => {
           if (active) {
-            url = URL.URL ? URL.createObjectURL(blob) : window.URL.createObjectURL(blob);
+            url = window.URL.createObjectURL(blob);
             setPreviewUrl(url);
           }
         })
@@ -222,45 +281,119 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     };
   }, [documentId]);
 
-  // --- 3. DRAGGABLE SPLIT PANE HANDLERS ---
-  const handleSplitMouseDown = (e: React.MouseEvent) => {
+  // --- 3. TWO-WAY HORIZONTAL SCROLL SYNCHRONIZATION ---
+  const handleTableScroll = useCallback(() => {
+    if (!tableScrollRef.current || !horizontalScrollbarRef.current) return;
+    if (isSyncingScrollRef.current === 'bar') return;
+    isSyncingScrollRef.current = 'table';
+    horizontalScrollbarRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+    requestAnimationFrame(() => {
+      if (isSyncingScrollRef.current === 'table') {
+        isSyncingScrollRef.current = null;
+      }
+    });
+  }, []);
+
+  const handleHorizontalBarScroll = useCallback(() => {
+    if (!tableScrollRef.current || !horizontalScrollbarRef.current) return;
+    if (isSyncingScrollRef.current === 'table') return;
+    isSyncingScrollRef.current = 'bar';
+    tableScrollRef.current.scrollLeft = horizontalScrollbarRef.current.scrollLeft;
+    requestAnimationFrame(() => {
+      if (isSyncingScrollRef.current === 'bar') {
+        isSyncingScrollRef.current = null;
+      }
+    });
+  }, []);
+
+  // Update real table scroll dimensions using ResizeObserver
+  const updateScrollDimensions = useCallback(() => {
+    const tableEl = tableRef.current;
+    const scrollEl = tableScrollRef.current;
+    if (!tableEl || !scrollEl) return;
+
+    const realScrollWidth = Math.max(tableEl.scrollWidth, scrollEl.scrollWidth);
+    const clientWidth = scrollEl.clientWidth;
+
+    setTableScrollWidth(realScrollWidth);
+    setHasHorizontalOverflow(realScrollWidth > clientWidth + 2);
+
+    if (horizontalScrollbarRef.current) {
+      horizontalScrollbarRef.current.scrollLeft = scrollEl.scrollLeft;
+    }
+  }, []);
+
+
+  // Reset horizontal scroll position when active table changes
+  useEffect(() => {
+    if (tableScrollRef.current) tableScrollRef.current.scrollLeft = 0;
+    if (horizontalScrollbarRef.current) horizontalScrollbarRef.current.scrollLeft = 0;
+  }, [selectedTableIndex]);
+
+  // --- 4. STABLE SPLIT PANE POINTER HANDLERS ---
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
     setIsDragging(true);
   };
 
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    latestClientXRef.current = e.clientX;
+
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        if (!splitContainerRef.current) return;
+        const rect = splitContainerRef.current.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const rawPercent = ((latestClientXRef.current - rect.left) / rect.width) * 100;
+        // Strict safe split limits: 30% to 60%
+        const clamped = Math.min(60, Math.max(30, rawPercent));
+        setSplitPercent(clamped);
+      });
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setIsDragging(false);
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  };
+
+  const handleDividerDoubleClick = () => {
+    setSplitPercent(40); // Reset to default 40% PDF / 60% Review
+  };
+
+  // Cursor and selection lock during dragging
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const container = document.getElementById('ocr-workspace-split-container');
-      if (!container) return;
-      const rect = container.getBoundingClientRect();
-      const newPercent = ((e.clientX - rect.left) / rect.width) * 100;
-      // Clamp between 20% and 75%
-      if (newPercent >= 20 && newPercent <= 75) {
-        setSplitPercent(newPercent);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
-
     if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    } else {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     }
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
     };
   }, [isDragging]);
 
-  // --- 4. CELL EDITING HANDLERS ---
-  const startEditCell = (cell: ExtractedCell) => {
+  const startEditCell = (cell: ExtractedCell | UnifiedCell) => {
+    if (!cell.id || (cell as UnifiedCell).isPlaceholder) return;
     setSelectedCellId(cell.id);
     setEditingCellId(cell.id);
-    setEditValue(cell.rawValue);
-    setEditType(cell.cellType || 'TEXT');
+    setEditValue(cell.rawValue || '');
+    setEditType((cell.cellType as any) || 'TEXT');
   };
 
   const cancelEditCell = () => {
@@ -277,35 +410,20 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
         cellType: editType,
       });
 
-      const updatedCellData = res.cell;
+      if (!res.success) {
+        throw new Error(res.message || 'Không thể cập nhật ô dữ liệu.');
+      }
 
-      // Update local state with normalized values returned from backend
-      setOcrData((prev) => {
-        if (!prev) return prev;
-        const updatedTables = prev.tables.map((t) => ({
-          ...t,
-          rows: t.rows.map((r) => ({
-            ...r,
-            cells: r.cells.map((c) =>
-              c.id === editingCellId
-                ? {
-                    ...c,
-                    rawValue: updatedCellData?.raw_value ?? editValue,
-                    normalizedValue: updatedCellData?.normalized_value ?? editValue,
-                    cellType: (updatedCellData?.cell_type as any) ?? editType,
-                    isReviewed: true,
-                    confidence: 1.0, // Human reviewer confirmed
-                  }
-                : c
-            ),
-          })),
-        }));
-        return { ...prev, tables: updatedTables };
-      });
-
-      setEditingCellId(null);
-      setSuccessMessage('Đã lưu chỉnh sửa ô.');
-      setTimeout(() => setSuccessMessage(null), 2500);
+      // Re-fetch fresh OCR result from backend to recompute UnifiedTable and dynamic CellQualityEvaluator
+      try {
+        await loadOcrData(true);
+        setEditingCellId(null);
+        setSuccessMessage('Đã lưu chỉnh sửa và làm mới đánh giá chất lượng.');
+        setTimeout(() => setSuccessMessage(null), 2500);
+      } catch (refetchErr: any) {
+        setEditingCellId(null);
+        alert('Đã lưu dữ liệu ô thành công, nhưng không thể làm mới đánh giá chất lượng: ' + (refetchErr.message || 'Lỗi mạng.'));
+      }
     } catch (err: any) {
       alert(err.message || 'Lỗi khi lưu ô.');
     } finally {
@@ -313,27 +431,31 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     }
   };
 
-  // --- 5. ROW OPERATIONS ---
-  const handleAddRow = async (table: ExtractedTable) => {
-    if (newRowValues.length === 0) return;
+  const handleConfirmCell = async (cell: ExtractedCell | UnifiedCell) => {
+    if (!cell.id || (cell as UnifiedCell).isPlaceholder) return;
+    setConfirmingCellId(cell.id);
     try {
-      const cellsPayload = newRowValues.map((val, idx) => ({
-        rawValue: val,
-        columnIndex: idx,
-        cellType: 'TEXT' as const,
-      }));
+      const res = await api.confirmExtractedCell(documentId, cell.id);
+      if (!res.success) {
+        throw new Error(res.message || 'Không thể xác nhận ô dữ liệu.');
+      }
 
-      await api.addExtractedRow(documentId, table.id, cellsPayload);
-      setIsAddingRow(false);
-      setNewRowValues([]);
-      await loadOcrData();
-      setSuccessMessage('Đã thêm dòng mới vào bảng.');
-      setTimeout(() => setSuccessMessage(null), 2500);
+      // Re-fetch fresh OCR result from backend to rebuild UnifiedTable with updated isReviewed
+      try {
+        await loadOcrData(true);
+        setSuccessMessage('Đã xác nhận giá trị ô đúng theo tài liệu gốc.');
+        setTimeout(() => setSuccessMessage(null), 2500);
+      } catch (refetchErr: any) {
+        alert('Đã xác nhận ô dữ liệu thành công trên máy chủ, nhưng không thể làm mới bảng hiển thị: ' + (refetchErr.message || 'Lỗi mạng.'));
+      }
     } catch (err: any) {
-      alert(err.message || 'Lỗi khi thêm dòng.');
+      alert(err.message || 'Lỗi khi xác nhận ô dữ liệu.');
+    } finally {
+      setConfirmingCellId(null);
     }
   };
 
+  // --- 5. ROW OPERATIONS ---
   const handleDeleteRow = async (table: ExtractedTable, rowIndex: number) => {
     if (!confirm(`Bạn có chắc chắn muốn xóa dòng số ${rowIndex + 1}?`)) return;
     try {
@@ -404,10 +526,18 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   };
 
   // --- MEMOIZED COMPUTATIONS ---
+  const unifiedTable = ocrData?.unifiedTransactionTable;
+  const isUnified = Boolean(unifiedTable && unifiedTable.rows && unifiedTable.rows.length > 0);
   const activeTable = ocrData?.tables?.[selectedTableIndex];
+  const isTableEmpty = isUnified
+    ? (!unifiedTable || !unifiedTable.rows || unifiedTable.rows.length === 0)
+    : (!activeTable || !activeTable.rows || activeTable.rows.length === 0);
 
   // Structural column count calculation
   const columnCount = useMemo(() => {
+    if (isUnified && unifiedTable) {
+      return unifiedTable.columns?.length || unifiedTable.headers?.length || 0;
+    }
     if (!activeTable) return 0;
     let maxCol = activeTable.columnCount || 0;
     if (activeTable.headers && activeTable.headers.length > maxCol) {
@@ -421,10 +551,13 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
       });
     });
     return maxCol;
-  }, [activeTable]);
+  }, [isUnified, unifiedTable, activeTable]);
 
   // Effective dynamic header labels
   const effectiveHeaders = useMemo(() => {
+    if (isUnified && unifiedTable) {
+      return (unifiedTable.headers || []).map((h, i) => (h && h.trim() ? h.trim() : `Cột ${i + 1}`));
+    }
     if (!activeTable || columnCount === 0) return [];
     const result: string[] = [];
     for (let i = 0; i < columnCount; i++) {
@@ -436,10 +569,32 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
       }
     }
     return result;
-  }, [activeTable, columnCount]);
+  }, [isUnified, unifiedTable, activeTable, columnCount]);
 
-  // Exclude header row cleanly from body data rows
+  // Synchronize ResizeObserver with table, column count, and split width changes
+  useEffect(() => {
+    const tableEl = tableRef.current;
+    const scrollEl = tableScrollRef.current;
+    if (!tableEl || !scrollEl) return;
+
+    const observer = new ResizeObserver(() => {
+      updateScrollDimensions();
+    });
+
+    observer.observe(tableEl);
+    observer.observe(scrollEl);
+    updateScrollDimensions();
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [selectedTableIndex, ocrData, columnCount, splitPercent, isUnified, updateScrollDimensions]);
+
+  // Data rows source (unified table or physical table fallback)
   const dataRows = useMemo(() => {
+    if (isUnified && unifiedTable) {
+      return unifiedTable.rows || [];
+    }
     if (!activeTable || !activeTable.rows) return [];
     return activeTable.rows.filter((row) => {
       if (row.isHeader) return false;
@@ -452,10 +607,78 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
       }
       return true;
     });
-  }, [activeTable]);
+  }, [isUnified, unifiedTable, activeTable]);
+
+  // Filtered rows for display according to Search and Low-Confidence Filter
+  const displayedRows = useMemo(() => {
+    return dataRows.filter((row: any) => {
+      // 1. Review filter condition: row must contain at least one real cell needing review
+      if (filterLowConfidenceOnly) {
+        const hasSuspiciousCell = row.cells?.some((c: any) => {
+          if (isUnified) {
+            return isUnifiedCellNeedsReview(c);
+          }
+          return isLegacyCellReviewWorthy(c);
+        });
+        if (!hasSuspiciousCell) return false;
+      }
+
+      // 2. Search query condition: row must match search text or page
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase().trim();
+        // Allow page query: "trang 2" or "p2" in unified mode
+        if (isUnified && row.sourcePage) {
+          if (q === `trang ${row.sourcePage}` || q === `p${row.sourcePage}`) {
+            return true;
+          }
+        }
+        return row.cells?.some(
+          (c: any) => !c.isPlaceholder && (c.rawValue || '').toLowerCase().includes(q)
+        );
+      }
+
+      return true;
+    });
+  }, [dataRows, filterLowConfidenceOnly, searchQuery, isUnified]);
 
   // Reviewed count & metrics calculation
   const metrics = useMemo(() => {
+    if (isUnified && unifiedTable) {
+      let total = 0;
+      let lowConf = 0;
+      let reviewed = 0;
+      let confSum = 0;
+      let confCount = 0;
+
+      unifiedTable.rows.forEach((r) => {
+        r.cells.forEach((c) => {
+          if (!c.isPlaceholder) {
+            total++;
+            if (typeof c.confidence === 'number') {
+              confSum += c.confidence;
+              confCount++;
+            }
+            if (c.qualityAssessment) {
+              if (c.qualityAssessment.severity === 'WARNING' || c.qualityAssessment.severity === 'CRITICAL') {
+                lowConf++;
+              }
+            } else if (typeof c.confidence === 'number' && c.confidence < 0.7) {
+              lowConf++;
+            }
+            if (c.isReviewed) reviewed++;
+          }
+        });
+      });
+
+      const avgConfidence = confCount > 0 ? confSum / confCount : 0.95;
+      return {
+        totalCells: total,
+        lowConfCount: lowConf,
+        reviewedCount: reviewed,
+        avgConfidence,
+      };
+    }
+
     if (!ocrData || !ocrData.tables) {
       return { totalCells: 0, lowConfCount: 0, reviewedCount: 0, avgConfidence: 0.95 };
     }
@@ -464,19 +687,23 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     let lowConf = 0;
     let reviewed = 0;
     let confSum = 0;
+    let confCount = 0;
 
     ocrData.tables.forEach((t) => {
       t.rows.forEach((r) => {
         r.cells.forEach((c) => {
           total++;
-          confSum += c.confidence;
-          if (c.confidence < 0.7) lowConf++;
+          if (typeof c.confidence === 'number') {
+            confSum += c.confidence;
+            confCount++;
+            if (c.confidence < 0.7) lowConf++;
+          }
           if (c.isReviewed) reviewed++;
         });
       });
     });
 
-    const avgConfidence = total > 0 ? confSum / total : (ocrData.tables[0]?.confidence || 0.95);
+    const avgConfidence = confCount > 0 ? confSum / confCount : (ocrData.tables[0]?.confidence || 0.95);
 
     return {
       totalCells: total,
@@ -484,70 +711,70 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
       reviewedCount: reviewed,
       avgConfidence,
     };
-  }, [ocrData]);
+  }, [isUnified, unifiedTable, ocrData]);
 
-  // Banking Reconciler Calculation
-  const reconciliation = useMemo(() => {
-    if (!activeTable || !activeTable.headers) return null;
+  // Review counter and severity breakdown (WARNING + CRITICAL for unified, < 0.85 for legacy)
+  const reviewStats = useMemo(() => {
+    if (isUnified && unifiedTable) {
+      let warningCount = 0;
+      let criticalCount = 0;
 
-    let totalDebit = 0;
-    let totalCredit = 0;
-    let debitColIdx = -1;
-    let creditColIdx = -1;
+      unifiedTable.rows.forEach((r) => {
+        r.cells?.forEach((c) => {
+          if (!isUnifiedCellNeedsReview(c)) return;
+          const severity = c.qualityAssessment?.severity;
+          if (severity === 'CRITICAL') {
+            criticalCount++;
+          } else if (severity === 'WARNING') {
+            warningCount++;
+          }
+        });
+      });
 
-    activeTable.headers.forEach((h, idx) => {
-      const lower = (h || '').toLowerCase();
-      if (lower.includes('nợ') || lower.includes('debit') || lower.includes('ghi nợ') || lower.includes('rút ra')) {
-        debitColIdx = idx;
-      }
-      if (lower.includes('có') || lower.includes('credit') || lower.includes('ghi có') || lower.includes('nạp vào')) {
-        creditColIdx = idx;
-      }
-    });
-
-    if (debitColIdx === -1 && creditColIdx === -1) {
-      return null;
+      return {
+        totalReviewCount: warningCount + criticalCount,
+        warningCount,
+        criticalCount,
+      };
     }
 
-    dataRows.forEach((r) => {
-      if (debitColIdx !== -1) {
-        const cell = r.cells.find((c) => Number(c.columnIndex) === debitColIdx);
-        if (cell) {
-          const val = Number(cell.normalizedValue || cell.rawValue.replace(/[^\d]/g, '')) || 0;
-          totalDebit += val;
+    if (!dataRows) return { totalReviewCount: 0, warningCount: 0, criticalCount: 0 };
+    let legacyCount = 0;
+    dataRows.forEach((r: any) => {
+      r.cells?.forEach((c: any) => {
+        if (isLegacyCellReviewWorthy(c)) {
+          legacyCount++;
         }
-      }
-      if (creditColIdx !== -1) {
-        const cell = r.cells.find((c) => Number(c.columnIndex) === creditColIdx);
-        if (cell) {
-          const val = Number(cell.normalizedValue || cell.rawValue.replace(/[^\d]/g, '')) || 0;
-          totalCredit += val;
-        }
-      }
+      });
     });
-
     return {
-      hasColumns: true,
-      totalDebit,
-      totalCredit,
-      netChange: totalCredit - totalDebit,
+      totalReviewCount: legacyCount,
+      warningCount: legacyCount,
+      criticalCount: 0,
     };
-  }, [activeTable, dataRows]);
+  }, [isUnified, unifiedTable, dataRows]);
+
+  const lowConfidenceCount = reviewStats.totalReviewCount;
 
   // Selected cell object (preserved for future highlight compatibility)
   const selectedCell = useMemo(() => {
-    if (!selectedCellId || !activeTable) return null;
+    if (!selectedCellId) return null;
+    if (isUnified && unifiedTable) {
+      for (const r of unifiedTable.rows) {
+        for (const c of r.cells) {
+          if (!c.isPlaceholder && c.id === selectedCellId) return c;
+        }
+      }
+      return null;
+    }
+    if (!activeTable) return null;
     for (const r of activeTable.rows) {
       for (const c of r.cells) {
         if (c.id === selectedCellId) return c;
       }
     }
     return null;
-  }, [selectedCellId, activeTable]);
-
-  const formatVnd = (num: number) => {
-    return new Intl.NumberFormat('vi-VN').format(num) + ' VND';
-  };
+  }, [selectedCellId, isUnified, unifiedTable, activeTable]);
 
   // --- METADATA SELECTION & DYNAMIC PRESENTATION ---
   const metadataItems: OCRMetadataItem[] = useMemo(() => {
@@ -684,10 +911,10 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                   <span className="text-slate-400">Cần kiểm tra:</span>
                   <span
                     className={`font-bold ${
-                      metrics.lowConfCount > 0 ? 'text-amber-400' : 'text-slate-300'
+                      reviewStats.totalReviewCount > 0 ? 'text-amber-400' : 'text-slate-300'
                     }`}
                   >
-                    {metrics.lowConfCount}
+                    {reviewStats.totalReviewCount}
                   </span>
                 </div>
                 <span className="text-slate-700">|</span>
@@ -876,6 +1103,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
           </div>
         ) : (
           <div
+            ref={splitContainerRef}
             id="ocr-workspace-split-container"
             className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden relative"
           >
@@ -938,7 +1166,9 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                     <iframe
                       src={selectedPageNumber !== 'ALL' ? `${previewUrl}#page=${selectedPageNumber}` : previewUrl}
                       title="PDF Viewer"
-                      className="w-full h-full rounded-lg border border-slate-800 bg-white"
+                      className={`w-full h-full rounded-lg border border-slate-800 bg-white ${
+                        isDragging ? 'pointer-events-none' : ''
+                      }`}
                     />
                   </div>
                 ) : (
@@ -948,16 +1178,27 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
             </div>
 
             {/* ========================================================= */}
-            {/* DRAGGABLE DIVIDER */}
+            {/* DRAGGABLE DIVIDER (STABLE POINTER EVENTS + EXPANDED HIT AREA) */}
             {/* ========================================================= */}
             <div
-              onMouseDown={handleSplitMouseDown}
-              className={`hidden lg:flex w-2.5 bg-slate-900 border-x border-slate-800 hover:bg-blue-600/30 cursor-col-resize shrink-0 items-center justify-center transition-colors group ${
-                isDragging ? 'bg-blue-600/50' : ''
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerUp}
+              onDoubleClick={handleDividerDoubleClick}
+              className={`hidden lg:flex relative w-2.5 items-center justify-center cursor-col-resize select-none shrink-0 group z-20 bg-slate-900 border-x border-slate-800 transition-colors ${
+                isDragging ? 'bg-blue-600/50' : 'hover:bg-blue-600/30'
               }`}
-              title="Kéo sang trái/phải để thay đổi kích thước khung"
+              title="Kéo sang trái/phải để thay đổi kích thước khung (30% - 60%). Nhấp đúp để đặt lại 40/60."
             >
-              <div className="w-1 h-8 rounded-full bg-slate-700 group-hover:bg-blue-400 transition-colors" />
+              {/* Expanded hit target ~12px */}
+              <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
+              {/* Visual handle indicator */}
+              <div
+                className={`w-1 h-8 rounded-full transition-colors ${
+                  isDragging ? 'bg-blue-400' : 'bg-slate-700 group-hover:bg-blue-400'
+                }`}
+              />
             </div>
 
             {/* ========================================================= */}
@@ -1027,7 +1268,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                               </span>
                               <span
                                 className={`text-[9px] font-mono px-1 py-0.2 rounded shrink-0 flex items-center gap-1 ${confStyle.badge}`}
-                                title={`Độ tin cậy: ${(item.confidence * 100).toFixed(1)}% (P${item.sourcePage || 1})`}
+                                title={`Độ tin cậy OCR: ${(item.confidence * 100).toFixed(1)}% (P${item.sourcePage || 1})`}
                               >
                                 <span className={`w-1.5 h-1.5 rounded-full ${confStyle.dot}`} />
                                 {(item.confidence * 100).toFixed(0)}%
@@ -1081,7 +1322,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                                 </span>
                                 <span
                                   className={`text-[9px] font-mono px-1 py-0.2 rounded shrink-0 flex items-center gap-1 ${confStyle.badge}`}
-                                  title={`Độ tin cậy: ${(item.confidence * 100).toFixed(1)}%`}
+                                  title={`Độ tin cậy OCR: ${(item.confidence * 100).toFixed(1)}%`}
                                 >
                                   <span className={`w-1.5 h-1.5 rounded-full ${confStyle.dot}`} />
                                   {(item.confidence * 100).toFixed(0)}%
@@ -1126,8 +1367,8 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
 
               {/* TABLE SWITCHER & CONTROL BAR */}
               <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2.5 shrink-0">
-                {/* Scalable Table Selector Navigator */}
-                {ocrData?.tables && ocrData.tables.length > 0 && (
+                {/* Scalable Table Selector Navigator (Rendered only in legacy fallback mode) */}
+                {!isUnified && ocrData?.tables && ocrData.tables.length > 0 && (
                   <div className="flex items-center gap-2 bg-slate-950 p-2 rounded-xl border border-slate-800 text-xs">
                     <span className="font-bold text-slate-400 flex items-center gap-1.5 shrink-0 pl-1">
                       <Layers className="w-3.5 h-3.5 text-blue-400" />
@@ -1190,136 +1431,109 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                 )}
 
                 {/* Filter & Search Bar */}
-                <div className="flex flex-wrap items-center justify-between gap-2.5">
-                  <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-                    <div className="relative flex-1">
-                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-                      <input
-                        type="text"
-                        placeholder="Tìm nội dung ô..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      />
-                      {searchQuery && (
-                        <button
-                          onClick={() => setSearchQuery('')}
-                          className="absolute right-2 top-2 text-slate-400 hover:text-white"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-
-                    <button
-                      onClick={() => setFilterLowConfidenceOnly(!filterLowConfidenceOnly)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition shrink-0 ${
-                        filterLowConfidenceOnly
-                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                          : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
-                      }`}
-                    >
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Ô cần kiểm tra</span>
-                    </button>
-                  </div>
-
-                  {/* Add Row Action */}
-                  {activeTable && (
-                    <button
-                      onClick={() => {
-                        setIsAddingRow(!isAddingRow);
-                        setNewRowValues(new Array(columnCount).fill(''));
-                      }}
-                      className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-950/60 text-emerald-300 hover:bg-emerald-900/60 border border-emerald-800/80 flex items-center gap-1.5 transition shrink-0"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>{isAddingRow ? 'Đóng form' : 'Thêm dòng mới'}</span>
-                    </button>
-                  )}
-                </div>
-
-                {/* Banking Reconciliation Bar if Available */}
-                {reconciliation && (
-                  <div className="p-2.5 bg-blue-950/30 border border-blue-800/50 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <Calculator className="w-4 h-4 text-blue-400 shrink-0" />
-                      <span className="font-bold text-slate-200">Đối soát phát sinh:</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div>
-                        <span className="text-slate-400 mr-1">Nợ:</span>
-                        <span className="font-bold text-rose-400">{formatVnd(reconciliation.totalDebit)}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 mr-1">Có:</span>
-                        <span className="font-bold text-emerald-400">{formatVnd(reconciliation.totalCredit)}</span>
-                      </div>
-                      <div className="border-l border-slate-800 pl-3">
-                        <span className="text-slate-400 mr-1">Chênh lệch:</span>
-                        <span className="font-bold text-blue-400">{formatVnd(reconciliation.netChange)}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Add Row Form */}
-                {isAddingRow && activeTable && (
-                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
-                    <div className="flex items-center justify-between text-xs font-bold text-slate-200">
-                      <span>Nhập dữ liệu cho dòng mới:</span>
-                      <button onClick={() => setIsAddingRow(false)} className="text-slate-400 hover:text-white">
+                <div className="flex items-center gap-2.5">
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                    <input
+                      type="text"
+                      placeholder="Tìm nội dung ô..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-8 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2 top-2 text-slate-400 hover:text-white"
+                        title="Xóa tìm kiếm"
+                      >
                         <X className="w-3.5 h-3.5" />
                       </button>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {effectiveHeaders.map((h, hIdx) => (
-                        <div key={hIdx}>
-                          <label className="text-[10px] font-semibold text-slate-400 block truncate">{h}</label>
-                          <input
-                            type="text"
-                            placeholder={`Giá trị ${h}`}
-                            value={newRowValues[hIdx] || ''}
-                            onChange={(e) => {
-                              const updated = [...newRowValues];
-                              updated[hIdx] = e.target.value;
-                              setNewRowValues(updated);
-                            }}
-                            className="w-full px-2.5 py-1 text-xs bg-slate-900 border border-slate-800 rounded text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        onClick={() => setIsAddingRow(false)}
-                        className="px-3 py-1 text-xs text-slate-400 hover:text-white rounded transition"
-                      >
-                        Hủy
-                      </button>
-                      <button
-                        onClick={() => handleAddRow(activeTable)}
-                        className="px-3 py-1 text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-500 rounded transition"
-                      >
-                        Xác nhận thêm
-                      </button>
-                    </div>
+                    )}
                   </div>
-                )}
+
+                  <button
+                    onClick={() => setFilterLowConfidenceOnly(!filterLowConfidenceOnly)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition shrink-0 ${
+                      filterLowConfidenceOnly
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm shadow-amber-500/10'
+                        : reviewStats.totalReviewCount > 0
+                        ? 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-900 hover:border-slate-700'
+                        : 'bg-slate-950 text-slate-400 border-slate-800/80 hover:bg-slate-900'
+                    }`}
+                    title={filterLowConfidenceOnly ? 'Hủy lọc: hiển thị lại tất cả các dòng' : 'Chỉ lọc các dòng có ô cần kiểm tra'}
+                  >
+                    <AlertTriangle
+                      className={`w-3.5 h-3.5 ${
+                        filterLowConfidenceOnly
+                          ? 'text-amber-400'
+                          : reviewStats.totalReviewCount > 0
+                          ? reviewStats.criticalCount > 0
+                            ? 'text-rose-400'
+                            : 'text-amber-400'
+                          : 'text-slate-500'
+                      }`}
+                    />
+                    <span>
+                      {filterLowConfidenceOnly
+                        ? `Đang lọc: ${reviewStats.totalReviewCount} ô cần kiểm tra`
+                        : `${reviewStats.totalReviewCount} ô cần kiểm tra`}
+                    </span>
+                    {reviewStats.totalReviewCount > 0 && !filterLowConfidenceOnly && (
+                      <span className="text-[10px] font-normal text-slate-400 ml-0.5">
+                        ({reviewStats.warningCount > 0 ? `${reviewStats.warningCount} cần kiểm tra` : ''}
+                        {reviewStats.warningCount > 0 && reviewStats.criticalCount > 0 ? ' · ' : ''}
+                        {reviewStats.criticalCount > 0 ? `${reviewStats.criticalCount} ưu tiên kiểm tra` : ''})
+                      </span>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {/* --------------------------------------------------------- */}
               {/* ADVANCED STICKY DATA GRID & TABLE */}
               {/* --------------------------------------------------------- */}
-              <div className="flex-1 min-h-0 min-w-0 overflow-auto relative p-3 bg-slate-950">
-                {!activeTable || activeTable.rows.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-500 py-12">
+              <div className="flex-1 min-h-0 min-w-0 flex flex-col p-3 bg-slate-950 overflow-hidden">
+                <style>{`
+                  .table-viewport-scroll::-webkit-scrollbar:horizontal {
+                    display: none !important;
+                    height: 0 !important;
+                  }
+                  .horizontal-scrollbar-dock::-webkit-scrollbar {
+                    height: 10px;
+                  }
+                  .horizontal-scrollbar-dock::-webkit-scrollbar-track {
+                    background: #090d16;
+                    border-radius: 9999px;
+                  }
+                  .horizontal-scrollbar-dock::-webkit-scrollbar-thumb {
+                    background: #334155;
+                    border-radius: 9999px;
+                    border: 2px solid #090d16;
+                  }
+                  .horizontal-scrollbar-dock::-webkit-scrollbar-thumb:hover {
+                    background: #3b82f6;
+                  }
+                `}</style>
+                {isTableEmpty ? (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-500 py-12 border border-slate-800 rounded-xl">
                     <FileSpreadsheet className="w-10 h-10 mb-2 opacity-40" />
                     <p className="text-xs font-medium">Không tìm thấy dữ liệu bảng trong tài liệu này.</p>
                   </div>
                 ) : (
-                  <div className="relative border border-slate-800 rounded-xl overflow-x-auto shadow-xs">
-                    <table className="min-w-full w-max text-left border-collapse text-xs">
+                  <div className="flex-1 min-h-0 min-w-0 flex flex-col relative">
+                    {/* A. TABLE VIEWPORT (Sticky header & rows with synchronized horizontal scroll) */}
+                    <div
+                      ref={tableScrollRef}
+                      onScroll={handleTableScroll}
+                      className={`table-viewport-scroll flex-1 min-h-0 min-w-0 overflow-auto relative border border-slate-800 bg-slate-900/40 shadow-xs focus:outline-none ${
+                        hasHorizontalOverflow ? 'rounded-t-xl border-b-0' : 'rounded-xl'
+                      }`}
+                    >
+                      <table
+                        ref={tableRef}
+                        className="min-w-full w-max text-left border-collapse text-xs"
+                      >
                       {/* STICKY HEADER */}
                       <thead>
                         <tr className="bg-slate-900 text-slate-200">
@@ -1332,180 +1546,275 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                           {effectiveHeaders.map((head, hIdx) => (
                             <th
                               key={hIdx}
-                              className="sticky top-0 z-20 bg-slate-900 border-b border-r border-slate-800 py-2.5 px-3.5 font-bold uppercase tracking-wider text-[11px] text-slate-200 min-w-[150px] last:border-r-0 shadow-xs"
+                              className="sticky top-0 z-20 bg-slate-900 border-b border-r border-slate-800 py-2.5 px-3.5 font-bold uppercase tracking-wider text-[11px] text-slate-200 min-w-[150px] shadow-xs"
                             >
                               {head}
                             </th>
                           ))}
 
-                          {/* Sticky Actions Header */}
-                          <th className="sticky top-0 right-0 z-20 bg-slate-900 border-b border-slate-800 py-2.5 px-2 w-14 text-center font-bold text-slate-400 shadow-xs">
-                            Thao tác
-                          </th>
+                          {/* System "Trang" Column Header in Unified Mode */}
+                          {isUnified && (
+                            <th className="sticky top-0 z-20 bg-slate-900 border-b border-r border-slate-800 py-2.5 px-3 w-20 text-center font-bold uppercase tracking-wider text-[11px] text-slate-400 shadow-xs">
+                              Trang
+                            </th>
+                          )}
+
+                          {/* Sticky Actions Header (Legacy Fallback Only) */}
+                          {!isUnified && (
+                            <th className="sticky top-0 right-0 z-20 bg-slate-900 border-b border-slate-800 py-2.5 px-2 w-14 text-center font-bold text-slate-400 shadow-xs">
+                              Thao tác
+                            </th>
+                          )}
                         </tr>
                       </thead>
 
                       {/* TABLE BODY */}
                       <tbody className="divide-y divide-slate-800/60 bg-slate-900/60">
-                        {dataRows
-                          .filter((row) => {
-                            if (filterLowConfidenceOnly) {
-                              return row.cells?.some((c) => c.confidence < 0.85);
-                            }
-                            if (searchQuery) {
-                              return row.cells?.some((c) =>
-                                c.rawValue.toLowerCase().includes(searchQuery.toLowerCase())
-                              );
-                            }
-                            return true;
-                          })
-                          .map((row) => (
-                            <tr key={row.id} className="hover:bg-blue-950/30 transition group">
-                              {/* STICKY INDEX COLUMN */}
-                              <td className="sticky left-0 z-10 bg-slate-900 py-2 px-3 text-center text-slate-400 font-mono text-[11px] border-r border-slate-800/80">
-                                {row.rowIndex + 1}
-                              </td>
+                        {displayedRows.map((row: any, rIdx: number) => (
+                          <tr key={row.id || (row as UnifiedRow).sourceRowId || rIdx} className="hover:bg-blue-950/30 transition group">
+                            {/* STICKY INDEX COLUMN */}
+                            <td className="sticky left-0 z-10 bg-slate-900 py-2 px-3 text-center text-slate-400 font-mono text-[11px] border-r border-slate-800/80">
+                              {isUnified ? (row as UnifiedRow).displayRowIndex + 1 : (row as ExtractedRow).rowIndex + 1}
+                            </td>
 
-                              {/* DYNAMIC CELL RENDERING BY STRUCTURAL COLUMN INDEX */}
-                              {Array.from({ length: columnCount }, (_, colIdx) => {
-                                const cell = row.cells?.find(
-                                  (c) => Number(c.columnIndex) === colIdx
-                                );
+                            {/* DYNAMIC CELL RENDERING BY STRUCTURAL COLUMN INDEX */}
+                            {Array.from({ length: columnCount }, (_, colIdx) => {
+                              const cell: any = isUnified
+                                ? (row.cells as UnifiedCell[])?.find((c) => c.canonicalColumnIndex === colIdx)
+                                : (row.cells as ExtractedCell[])?.find((c) => Number(c.columnIndex) === colIdx);
 
-                                if (!cell) {
-                                  return (
-                                    <td
-                                      key={colIdx}
-                                      className="py-2 px-3 border-r border-slate-800/60 last:border-r-0 min-w-[150px]"
-                                    >
-                                      <span className="text-slate-600 italic">—</span>
-                                    </td>
-                                  );
-                                }
-
-                                const isEditing = editingCellId === cell.id;
-                                const isSelected = selectedCellId === cell.id;
-                                const isLowConf = cell.confidence < 0.7;
-                                const isMedConf = cell.confidence >= 0.7 && cell.confidence < 0.9;
-                                const isHighConf = cell.confidence >= 0.9;
-
+                              if (!cell || (isUnified && cell.isPlaceholder)) {
                                 return (
                                   <td
-                                    key={cell.id}
-                                    onClick={() => setSelectedCellId(cell.id)}
-                                    onDoubleClick={() => startEditCell(cell)}
-                                    className={`py-2 px-3 border-r border-slate-800/60 last:border-r-0 relative transition cursor-pointer min-w-[150px] ${
-                                      isSelected
-                                        ? 'bg-blue-950/80 ring-1 ring-blue-500 z-5'
-                                        : isLowConf
-                                        ? 'bg-rose-950/30'
-                                        : isMedConf
-                                        ? 'bg-amber-950/20'
-                                        : ''
-                                    }`}
+                                    key={colIdx}
+                                    className="py-2 px-3 border-r border-slate-800/60 last:border-r-0 min-w-[150px] select-none"
                                   >
-                                    {isEditing ? (
-                                      <div className="flex items-center gap-1.5 min-w-[180px]">
-                                        <input
-                                          type="text"
-                                          value={editValue}
-                                          onChange={(e) => setEditValue(e.target.value)}
-                                          autoFocus
-                                          onKeyDown={(e) => {
-                                            if (e.key === 'Enter') saveCellEdit();
-                                            if (e.key === 'Escape') cancelEditCell();
-                                          }}
-                                          className="flex-1 px-2 py-1 text-xs border border-blue-500 rounded bg-slate-950 text-slate-100 focus:outline-none ring-1 ring-blue-500"
-                                        />
-                                        <select
-                                          value={editType}
-                                          onChange={(e: any) => setEditType(e.target.value)}
-                                          className="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-1 text-slate-200"
-                                        >
-                                          <option value="TEXT">Chữ</option>
-                                          <option value="MONEY">Tiền VND</option>
-                                          <option value="DATE">Ngày</option>
-                                          <option value="NUMBER">Số</option>
-                                        </select>
-                                        <button
-                                          onClick={saveCellEdit}
-                                          disabled={isSavingCell}
-                                          className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-500 transition"
-                                          title="Lưu (Enter)"
-                                        >
-                                          <Check className="w-3.5 h-3.5" />
-                                        </button>
-                                        <button
-                                          onClick={cancelEditCell}
-                                          className="p-1 bg-slate-800 text-slate-400 rounded hover:text-white transition"
-                                          title="Hủy (Esc)"
-                                        >
-                                          <X className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <div className="flex items-center justify-between gap-1.5 group/cell">
-                                        <span
-                                          className={`font-medium whitespace-nowrap ${
-                                            cell.cellType === 'MONEY'
-                                              ? 'font-mono text-slate-200 font-semibold'
-                                              : cell.cellType === 'DATE'
-                                              ? 'font-mono text-slate-300'
-                                              : 'text-slate-200'
-                                          }`}
-                                          title={`Gốc: ${cell.rawValue}\nChuẩn hóa: ${
-                                            cell.normalizedValue
-                                          }\nĐộ tin cậy: ${(cell.confidence * 100).toFixed(1)}%`}
-                                        >
-                                          {cell.rawValue ?? cell.normalizedValue ?? (
-                                            <span className="text-slate-600 italic">—</span>
-                                          )}
-                                        </span>
+                                    <span className="text-slate-600 italic">—</span>
+                                  </td>
+                                );
+                              }
 
-                                        {/* Confidence Indicators */}
-                                        <div className="flex items-center gap-1 shrink-0 ml-1">
-                                          {cell.isReviewed ? (
-                                            <span title="Đã đối soát bởi người dùng">
-                                              <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                                            </span>
-                                          ) : isLowConf ? (
-                                            <span
-                                              className="flex items-center text-[10px] text-rose-300 font-bold bg-rose-950/80 px-1 py-0.5 rounded border border-rose-800/60"
-                                              title={`Cần đối soát: độ tin cậy ${(cell.confidence * 100).toFixed(0)}%`}
-                                            >
-                                              <AlertTriangle className="w-2.5 h-2.5 mr-0.5 text-rose-400" />
-                                              {(cell.confidence * 100).toFixed(0)}%
-                                            </span>
-                                          ) : isMedConf ? (
-                                            <span
-                                              className="w-1.5 h-1.5 rounded-full bg-amber-400"
-                                              title={`Độ tin cậy vừa: ${(cell.confidence * 100).toFixed(0)}%`}
-                                            />
-                                          ) : (
-                                            <span
-                                              className="w-1.5 h-1.5 rounded-full bg-emerald-400/80"
-                                              title={`Tin cậy cao: ${(cell.confidence * 100).toFixed(0)}%`}
-                                            />
-                                          )}
+                              const qa = cell.qualityAssessment;
+                              const isCritical = qa?.severity === 'CRITICAL';
+                              const isWarning = qa?.severity === 'WARNING';
+                              const isPass = qa?.severity === 'PASS';
 
+                              const hasConf = typeof cell.confidence === 'number' && cell.confidence !== null;
+                              const confPercentStr = hasConf ? `${(cell.confidence * 100).toFixed(1)}%` : 'N/A';
+                              const legacyLowConf = !qa && hasConf && cell.confidence < 0.7;
+                              const legacyMedConf = !qa && hasConf && cell.confidence >= 0.7 && cell.confidence < 0.85;
+
+                              const showCritical = isCritical || legacyLowConf;
+                              const showWarning = isWarning || legacyMedConf;
+                              const isEditing = editingCellId === cell.id;
+                              const isSelected = selectedCellId === cell.id;
+                              const isCellReviewed = Boolean(cell.isReviewed);
+                              const needsHumanReview = isUnified ? isUnifiedCellNeedsReview(cell) : isLegacyCellReviewWorthy(cell);
+                              const isConfirming = confirmingCellId === cell.id;
+
+                              const confDisplay = hasConf ? `${(cell.confidence * 100).toFixed(1)}%` : 'N/A';
+                              const sourceDisplay = cell.confidenceSource === 'AZURE_WORD_AGGREGATE'
+                                ? 'Azure OCR'
+                                : cell.confidenceSource === 'AZURE_CELL'
+                                ? 'Azure OCR (ô)'
+                                : cell.confidenceSource === 'EMPTY_CELL'
+                                ? 'Ô trống'
+                                : cell.confidenceSource === 'UNAVAILABLE'
+                                ? 'Không khả dụng'
+                                : null;
+
+                              let cellTooltip = `Giá trị: ${cell.rawValue ?? cell.normalizedValue ?? '—'}`;
+
+                              if (isCellReviewed) {
+                                cellTooltip += `\nTrạng thái: Đã kiểm tra`;
+                                if (qa && (isCritical || isWarning)) {
+                                  const machineSeverity = isCritical ? 'Ưu tiên kiểm tra' : 'Cần kiểm tra';
+                                  cellTooltip += ` (Đánh giá ban đầu: ${machineSeverity})`;
+                                }
+                              } else if (qa) {
+                                const statusLabel = isCritical
+                                  ? 'Ưu tiên kiểm tra'
+                                  : isWarning
+                                  ? 'Cần kiểm tra'
+                                  : 'Không phát hiện bất thường';
+                                cellTooltip += `\nTrạng thái: ${statusLabel}`;
+                              } else if (legacyLowConf) {
+                                cellTooltip += `\nTrạng thái: Ưu tiên kiểm tra (Độ tin cậy OCR < 70%)`;
+                              } else if (legacyMedConf) {
+                                cellTooltip += `\nTrạng thái: Cần kiểm tra (Độ tin cậy OCR < 85%)`;
+                              } else {
+                                cellTooltip += `\nTrạng thái: Không phát hiện bất thường`;
+                              }
+
+                              if (qa?.reasons && qa.reasons.length > 0) {
+                                cellTooltip += `\nLý do:\n` + qa.reasons.map((r: any) => `• ${formatQualityReason(r)}`).join('\n');
+                              }
+
+                              cellTooltip += `\nĐộ tin cậy OCR: ${confDisplay}`;
+                              if (sourceDisplay) {
+                                cellTooltip += `\nNguồn: ${sourceDisplay}`;
+                              }
+
+                              return (
+                                <td
+                                  key={cell.id || colIdx}
+                                  onClick={() => cell.id && setSelectedCellId(cell.id)}
+                                  onDoubleClick={() => cell.id && startEditCell(cell)}
+                                  className={`py-2 px-3 border-r border-slate-800/60 last:border-r-0 relative transition cursor-pointer min-w-[150px] ${
+                                    isSelected
+                                      ? 'bg-blue-950/80 ring-1 ring-blue-500 z-5'
+                                      : showCritical
+                                      ? isCellReviewed
+                                        ? 'bg-rose-950/15 border-b border-b-rose-900/30'
+                                        : 'bg-rose-950/30 border-b border-b-rose-800/40'
+                                      : showWarning
+                                      ? isCellReviewed
+                                        ? 'bg-amber-950/10 border-b border-b-amber-900/20'
+                                        : 'bg-amber-950/20 border-b border-b-amber-800/30'
+                                      : ''
+                                  }`}
+                                >
+                                  {isEditing ? (
+                                    <div className="flex items-center gap-1.5 min-w-[180px]">
+                                      <input
+                                        type="text"
+                                        value={editValue}
+                                        onChange={(e) => setEditValue(e.target.value)}
+                                        autoFocus
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') saveCellEdit();
+                                          if (e.key === 'Escape') cancelEditCell();
+                                        }}
+                                        className="flex-1 px-2 py-1 text-xs border border-blue-500 rounded bg-slate-950 text-slate-100 focus:outline-none ring-1 ring-blue-500"
+                                      />
+                                      <select
+                                        value={editType}
+                                        onChange={(e: any) => setEditType(e.target.value)}
+                                        className="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-1 text-slate-200"
+                                      >
+                                        <option value="TEXT">Chữ</option>
+                                        <option value="MONEY">Tiền VND</option>
+                                        <option value="DATE">Ngày</option>
+                                        <option value="NUMBER">Số</option>
+                                      </select>
+                                      <button
+                                        onClick={saveCellEdit}
+                                        disabled={isSavingCell}
+                                        className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-500 transition"
+                                        title="Lưu (Enter)"
+                                      >
+                                        <Check className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={cancelEditCell}
+                                        className="p-1 bg-slate-800 text-slate-400 rounded hover:text-white transition"
+                                        title="Hủy (Esc)"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-between gap-1.5 group/cell">
+                                      <span
+                                        className={`font-medium whitespace-nowrap ${
+                                          cell.cellType === 'MONEY'
+                                            ? 'font-mono text-slate-200 font-semibold'
+                                            : cell.cellType === 'DATE'
+                                            ? 'font-mono text-slate-300'
+                                            : 'text-slate-200'
+                                        }`}
+                                        title={cellTooltip}
+                                      >
+                                        {cell.rawValue ?? cell.normalizedValue ?? (
+                                          <span className="text-slate-600 italic">—</span>
+                                        )}
+                                      </span>
+
+                                      {/* Quality & Confidence Indicators */}
+                                      <div className="flex items-center gap-1 shrink-0 ml-1">
+                                        {isCellReviewed ? (
+                                          <span
+                                            className={`flex items-center text-[10px] px-1.5 py-0.5 rounded border shadow-xs ${
+                                              showCritical
+                                                ? 'bg-rose-950/30 text-rose-300/80 border-rose-800/30'
+                                                : showWarning
+                                                ? 'bg-amber-950/30 text-amber-300/80 border-amber-800/30'
+                                                : 'bg-slate-900 text-slate-400 border-slate-800'
+                                            }`}
+                                            title={cellTooltip}
+                                          >
+                                            <ShieldCheck className="w-3 h-3 text-emerald-400 mr-0.5 shrink-0" />
+                                            Đã kiểm tra
+                                          </span>
+                                        ) : showCritical ? (
+                                          <span
+                                            className="flex items-center text-[10px] text-rose-200 font-semibold bg-rose-950/90 px-1.5 py-0.5 rounded border border-rose-700/80 shadow-xs"
+                                            title={cellTooltip}
+                                          >
+                                            <AlertCircle className="w-3 h-3 mr-0.5 text-rose-400 shrink-0" />
+                                            Ưu tiên kiểm tra
+                                          </span>
+                                        ) : showWarning ? (
+                                          <span
+                                            className="flex items-center text-[10px] text-amber-200 font-semibold bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-700/70 shadow-xs"
+                                            title={cellTooltip}
+                                          >
+                                            <AlertTriangle className="w-3 h-3 mr-0.5 text-amber-400 shrink-0" />
+                                            Cần kiểm tra
+                                          </span>
+                                        ) : isPass || (!qa && hasConf && cell.confidence >= 0.85) ? (
+                                          <span
+                                            className="w-1.5 h-1.5 rounded-full bg-slate-600/40"
+                                            title={cellTooltip}
+                                          />
+                                        ) : null}
+
+                                        {/* Action: Confirm As-Is ("Xác nhận đã kiểm tra") for cells needing review */}
+                                        {needsHumanReview && (
                                           <button
                                             onClick={(e) => {
                                               e.stopPropagation();
-                                              startEditCell(cell);
+                                              handleConfirmCell(cell);
                                             }}
-                                            className="opacity-0 group-hover/cell:opacity-100 p-0.5 text-slate-400 hover:text-blue-400 transition"
-                                            title="Sửa ô này"
+                                            disabled={isConfirming}
+                                            className="p-0.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/60 rounded transition flex items-center"
+                                            title="Xác nhận đã kiểm tra (Chấp nhận giá trị trích xuất này)"
                                           >
-                                            <Edit2 className="w-3 h-3" />
+                                            <CheckCircle2 className="w-3.5 h-3.5" />
                                           </button>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </td>
-                                );
-                              })}
+                                        )}
 
-                              {/* Row Actions */}
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            startEditCell(cell);
+                                          }}
+                                          className="opacity-0 group-hover/cell:opacity-100 p-0.5 text-slate-400 hover:text-blue-400 transition"
+                                          title="Sửa ô này"
+                                        >
+                                          <Edit2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+
+                            {/* System "Trang" Column in Unified Mode */}
+                            {isUnified && (
+                              <td className="py-2 px-3 text-center border-r border-slate-800/60 last:border-r-0 w-20 shrink-0 select-none">
+                                <span
+                                  className="px-2 py-0.5 rounded-md text-[11px] font-mono font-medium bg-slate-800/70 text-slate-400 border border-slate-700/50"
+                                  title={`Trang ${(row as UnifiedRow).sourcePage}`}
+                                >
+                                  P{(row as UnifiedRow).sourcePage}
+                                </span>
+                              </td>
+                            )}
+
+                            {/* Row Actions (Legacy Fallback Only) */}
+                            {!isUnified && (
                               <td className="py-2 px-2 text-center">
                                 <button
                                   onClick={() => handleDeleteRow(activeTable, row.rowIndex)}
@@ -1515,32 +1824,56 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </td>
-                            </tr>
-                          ))}
+                            )}
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
-                )}
-              </div>
 
-              {/* FOOTER CAPTION */}
-              <div className="px-4 py-2 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between text-xs text-slate-400 shrink-0">
-                <div className="flex items-center gap-3">
-                  <span className="flex items-center gap-1.5 text-[11px] text-emerald-400">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                    Tin cậy cao (≥90%)
+                  {/* B. DEDICATED ALWAYS-VISIBLE HORIZONTAL SCROLLBAR DOCK */}
+                  {hasHorizontalOverflow && (
+                    <div
+                      ref={horizontalScrollbarRef}
+                      onScroll={handleHorizontalBarScroll}
+                      className="horizontal-scrollbar-dock shrink-0 w-full bg-slate-950 border border-slate-800 rounded-b-xl overflow-x-auto overflow-y-hidden select-none"
+                      style={{
+                        height: '14px',
+                        scrollbarWidth: 'thin',
+                        scrollbarColor: '#475569 #090d16',
+                      }}
+                      title="Kéo thanh cuộn ngang để xem toàn bộ các cột"
+                    >
+                      <div style={{ width: `${tableScrollWidth}px`, height: '1px' }} />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+              {/* FOOTER CAPTION & QUALITY LEGEND */}
+              <div className="px-4 py-2.5 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 shrink-0">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <span className="flex items-center gap-1.5 text-[11px] text-slate-400" title="Dữ liệu đồng nhất về cấu trúc, định dạng và độ tin cậy">
+                    <span className="w-2 h-2 rounded-full bg-slate-500"></span>
+                    Không phát hiện bất thường
                   </span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-amber-300">
-                    <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                    Vừa (70–89%)
+                  <span className="flex items-center gap-1.5 text-[11px] text-amber-300" title="Có dấu hiệu bất thường về cấu trúc hoặc độ tin cậy cần người dùng xem xét">
+                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                    Cần kiểm tra
                   </span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-rose-400">
-                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                    Cần đối soát ({'<'}70%)
+                  <span className="flex items-center gap-1.5 text-[11px] text-rose-400" title="Độ tin cậy rất thấp hoặc chứa nhiều dấu hiệu bất thường">
+                    <AlertCircle className="w-3 h-3 text-rose-400" />
+                    Ưu tiên kiểm tra
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-emerald-300" title="Đã được người dùng kiểm tra hoặc xác nhận">
+                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                    Đã kiểm tra
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-500">
-                  Nhấp đúp chuột để chỉnh sửa trực tiếp.
+                <div className="text-[11px] text-slate-400 max-w-xl text-right">
+                  <span className="text-slate-500">Ghi chú: </span>
+                  Độ tin cậy OCR là tín hiệu từ công cụ nhận dạng, không đồng nghĩa với độ chính xác tuyệt đối. Hệ thống kết hợp kiểm tra cấu trúc để đề xuất ô cần đối soát.
                 </div>
               </div>
             </div>

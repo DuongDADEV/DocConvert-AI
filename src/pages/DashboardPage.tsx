@@ -36,8 +36,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState<DocumentItem | null>(null);
 
-  const loadDashboardData = async () => {
-    setIsLoading(true);
+  const loadDashboardData = async (silent = false) => {
+    if (!silent) setIsLoading(true);
     setError(null);
     try {
       const [docsRes, logsRes] = await Promise.all([api.getDocuments(), api.getAuditLogs(6)]);
@@ -47,17 +47,41 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
       if (logsRes.success) {
         setAuditLogs(logsRes.logs);
       }
-      await refreshProfile();
+      if (!silent) await refreshProfile();
     } catch (err: any) {
-      setError(err.message || 'Không thể tải dữ liệu bảng điều khiển.');
+      if (!silent) setError(err.message || 'Không thể tải dữ liệu bảng điều khiển.');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   };
 
   useEffect(() => {
     loadDashboardData();
   }, []);
+
+  // Auto-polling when any document is in transient state (PROCESSING, QUEUED, etc.)
+  useEffect(() => {
+    const hasTransient = documents.some((d) => {
+      const s = (d.status || '').toUpperCase();
+      return (
+        s === 'PROCESSING' ||
+        s === 'QUEUED' ||
+        s === 'UPLOADED' ||
+        s === 'PENDING' ||
+        s === 'PARSING' ||
+        s === 'VALIDATING' ||
+        s === 'UPLOADING' ||
+        s === 'VALIDATING_RESULT'
+      );
+    });
+    if (!hasTransient) return;
+
+    const timer = setInterval(() => {
+      loadDashboardData(true);
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [documents]);
 
   const handleDeleteConfirm = async () => {
     if (!showDeleteModal) return;

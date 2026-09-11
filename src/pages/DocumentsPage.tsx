@@ -77,8 +77,8 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onOpenUpload, sele
     };
   }, [previewDoc]);
 
-  const fetchDocuments = async () => {
-    setIsLoading(true);
+  const fetchDocuments = async (silent = false) => {
+    if (!silent) setIsLoading(true);
     setError(null);
     try {
       const res = await api.getDocuments();
@@ -90,15 +90,39 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onOpenUpload, sele
         }
       }
     } catch (err: any) {
-      setError(err.message || 'Không thể tải danh sách tài liệu.');
+      if (!silent) setError(err.message || 'Không thể tải danh sách tài liệu.');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   };
 
   useEffect(() => {
     fetchDocuments();
   }, [selectedDocId]);
+
+  // Auto-polling when any document is in transient state (QUEUED, PROCESSING, UPLOADED, etc.)
+  useEffect(() => {
+    const hasTransient = documents.some((d) => {
+      const s = (d.status || '').toUpperCase();
+      return (
+        s === 'PROCESSING' ||
+        s === 'QUEUED' ||
+        s === 'UPLOADED' ||
+        s === 'PENDING' ||
+        s === 'PARSING' ||
+        s === 'VALIDATING' ||
+        s === 'UPLOADING' ||
+        s === 'VALIDATING_RESULT'
+      );
+    });
+    if (!hasTransient) return;
+
+    const timer = setInterval(() => {
+      fetchDocuments(true);
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [documents]);
 
   const handleDelete = async () => {
     if (!showDeleteModal) return;
@@ -120,8 +144,16 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onOpenUpload, sele
 
   const filteredDocs = documents.filter((doc) => {
     const matchSearch = doc.original_filename.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchStatus = statusFilter === 'ALL' || doc.status === statusFilter;
-    return matchSearch && matchStatus;
+    if (statusFilter === 'ALL') return matchSearch;
+    if (statusFilter === 'QUEUED') {
+      const s = (doc.status || '').toUpperCase();
+      return matchSearch && (s === 'QUEUED' || s === 'PROCESSING' || s === 'UPLOADED' || s === 'PENDING' || s === 'PARSING');
+    }
+    if (statusFilter === 'READY') {
+      const s = (doc.status || '').toUpperCase();
+      return matchSearch && (s === 'READY' || s === 'COMPLETED');
+    }
+    return matchSearch && doc.status === statusFilter;
   });
 
   const formatFileSize = (bytes: number) => {
@@ -196,12 +228,25 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onOpenUpload, sele
             Tất cả ({documents.length})
           </button>
           <button
+            onClick={() => setStatusFilter('REVIEW_REQUIRED')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
+              statusFilter === 'REVIEW_REQUIRED' ? 'bg-amber-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            Cần kiểm tra ({documents.filter((d) => (d.status || '').toUpperCase() === 'REVIEW_REQUIRED').length})
+          </button>
+          <button
             onClick={() => setStatusFilter('QUEUED')}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
               statusFilter === 'QUEUED' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
-            Đang chờ ({documents.filter((d) => d.status === 'QUEUED' || d.status === 'UPLOADED').length})
+            Đang xử lý ({
+              documents.filter((d) => {
+                const s = (d.status || '').toUpperCase();
+                return s === 'QUEUED' || s === 'UPLOADED' || s === 'PROCESSING' || s === 'PENDING' || s === 'PARSING';
+              }).length
+            })
           </button>
           <button
             onClick={() => setStatusFilter('READY')}
@@ -209,7 +254,12 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onOpenUpload, sele
               statusFilter === 'READY' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
-            Hoàn tất ({documents.filter((d) => d.status === 'READY').length})
+            Hoàn tất ({
+              documents.filter((d) => {
+                const s = (d.status || '').toUpperCase();
+                return s === 'READY' || s === 'COMPLETED';
+              }).length
+            })
           </button>
         </div>
       </div>
@@ -430,7 +480,10 @@ export const DocumentsPage: React.FC<DocumentsPageProps> = ({ onOpenUpload, sele
       {reviewDocId && (
         <OcrReviewWorkspace
           documentId={reviewDocId}
-          onClose={() => setReviewDocId(null)}
+          onClose={() => {
+            setReviewDocId(null);
+            fetchDocuments(true);
+          }}
           onDocumentUpdated={(updatedDoc) => {
             setDocuments((prev) => prev.map((d) => (d.id === updatedDoc.id ? updatedDoc : d)));
           }}

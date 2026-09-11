@@ -13,6 +13,7 @@ import { excelExportEngine, ExportMode } from '../services/excelExportEngine.js'
 import { ocrRateLimiter, exportRateLimiter } from '../middleware/rateLimiter.js';
 import { DataNormalizer } from '../services/ocr/normalizer.js';
 import { createSupabaseUserClient, getSupabaseAdminClient } from '../services/supabaseClient.js';
+import { UnifiedTableService } from '../services/unifiedTableService.js';
 
 const router = express.Router();
 
@@ -363,6 +364,7 @@ router.get('/:id/ocr-result', async (req: AuthenticatedRequest, res: Response): 
         pages: ocrData?.pages || [],
         tables: [],
         documentMetadata: ocrData?.documentMetadata || [],
+        unifiedTransactionTable: null,
         stats: {
           totalCells: 0,
           lowConfidenceCount: 0,
@@ -374,6 +376,14 @@ router.get('/:id/ocr-result', async (req: AuthenticatedRequest, res: Response): 
       return;
     }
 
+    let unifiedTransactionTable = null;
+    try {
+      unifiedTransactionTable = UnifiedTableService.projectDocumentTables(docId, ocrData.tables);
+    } catch (projErr) {
+      console.error(`[UnifiedTableService] Error projecting unified table for document ${docId}:`, projErr);
+      unifiedTransactionTable = null;
+    }
+
     res.json({
       success: true,
       document: ocrData.document,
@@ -381,6 +391,7 @@ router.get('/:id/ocr-result', async (req: AuthenticatedRequest, res: Response): 
       pages: ocrData.pages,
       tables: ocrData.tables,
       documentMetadata: ocrData.documentMetadata || [],
+      unifiedTransactionTable,
       stats: ocrData.stats,
     });
   } catch (err: any) {
@@ -452,6 +463,35 @@ router.put('/:id/cells/:cellId', async (req: AuthenticatedRequest, res: Response
   } catch (err: any) {
     console.error('Update cell error:', err);
     res.status(400).json({ success: false, error: err.message || 'Không thể cập nhật ô dữ liệu.' });
+  }
+});
+
+// 9.1 CONFIRM EXTRACTED CELL AS-IS (Human Review Confirmation)
+router.put('/:id/cells/:cellId/confirm-review', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const docId = req.params.id;
+    const cellId = req.params.cellId;
+
+    // Verify document ownership & RLS
+    const doc = await db.getUserDocumentById(userId, docId, req.userToken);
+    if (!doc) {
+      res.status(404).json({ success: false, error: 'Không tìm thấy tài liệu hoặc không có quyền truy cập.' });
+      return;
+    }
+
+    const updatedCell = await db.updateExtractedCell(userId, docId, cellId, {
+      isReviewed: true,
+    }, req.userToken);
+
+    res.json({
+      success: true,
+      message: 'Đã xác nhận ô dữ liệu đúng.',
+      cell: updatedCell,
+    });
+  } catch (err: any) {
+    console.error('Confirm review error:', err);
+    res.status(400).json({ success: false, error: err.message || 'Không thể xác nhận ô dữ liệu.' });
   }
 });
 

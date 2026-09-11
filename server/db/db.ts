@@ -929,7 +929,10 @@ class DatabaseService {
                 rawValue: c.raw_value,
                 normalizedValue: c.normalized_value,
                 cellType: c.cell_type,
-                confidence: c.confidence_score,
+                confidence: c.confidence_score !== null && c.confidence_score !== undefined ? Number(c.confidence_score) : null,
+                confidenceSource: c.confidence_score !== null && c.confidence_score !== undefined
+                  ? 'AZURE_WORD_AGGREGATE'
+                  : (c.raw_value && c.raw_value.trim() !== '' ? 'UNAVAILABLE' : 'EMPTY_CELL'),
                 isReviewed: c.is_reviewed,
                 boundingPolygon: c.bounding_box?.polygon,
                 updatedAt: c.updated_at,
@@ -1082,13 +1085,14 @@ class DatabaseService {
 
     // Record review action
     const oldVal = cell.normalized_value ?? cell.raw_value ?? '';
-    const newVal = payload.normalized_value ?? payload.raw_value ?? '';
+    const newVal = payload.normalized_value ?? payload.raw_value ?? oldVal;
+    const isEdit = updates.rawValue !== undefined || updates.normalizedValue !== undefined;
     await client.from('review_actions').insert({
       id: crypto.randomUUID(),
       user_id: userId,
       document_id: documentId,
       cell_id: cellId,
-      action_type: 'EDIT_CELL',
+      action_type: isEdit ? 'EDIT_CELL' : 'CONFIRM_AS_IS',
       old_value: oldVal,
       new_value: newVal,
       created_at: now,

@@ -161,6 +161,7 @@ export interface DocumentOCRData {
   tables: ExtractedTable[];
   metadata?: Record<string, any>;
   documentMetadata?: OCRMetadataItem[];
+  unifiedTransactionTable?: UnifiedTransactionTable | null;
   stats: OCRStats;
 }
 
@@ -199,3 +200,91 @@ export interface AuthResponse {
   error?: string;
   message?: string;
 }
+
+export type SemanticColumnType =
+  | 'STT'
+  | 'DATE'
+  | 'VALUE_DATE'
+  | 'REFERENCE'
+  | 'DESCRIPTION'
+  | 'DEBIT'
+  | 'CREDIT'
+  | 'BALANCE'
+  | 'OTHER';
+
+export type QualitySeverity = 'PASS' | 'WARNING' | 'CRITICAL';
+
+export interface QualityReason {
+  code: string;
+  message?: string;
+}
+
+export interface CellQualityAssessment {
+  severity: QualitySeverity;
+  reasons: QualityReason[];
+}
+
+export interface UnifiedCell {
+  id: string | null;
+  rowId?: string;
+  tableId?: string;
+  sourcePage?: number;
+  sourceColumnIndex?: number;
+  canonicalColumnIndex: number;
+  rawValue: string;
+  normalizedValue: string;
+  cellType?: string;
+  confidence: number | null;
+  confidenceSource?: 'AZURE_WORD_AGGREGATE' | 'AZURE_CELL' | 'EMPTY_CELL' | 'UNAVAILABLE';
+  qualityAssessment?: CellQualityAssessment;
+  isReviewed?: boolean;
+  boundingPolygon?: any;
+  isPlaceholder?: boolean;
+}
+
+export interface UnifiedRow {
+  displayRowIndex: number;
+  sourceRowId: string;
+  sourceTableId: string;
+  sourcePage: number;
+  cells: UnifiedCell[];
+}
+
+export interface UnifiedColumn {
+  canonicalColumnIndex: number;
+  header: string;
+  normalizedHeader: string;
+  semanticType: SemanticColumnType;
+}
+
+export interface UnifiedSummaryRow {
+  sourceRowId: string;
+  sourceTableId: string;
+  sourcePage: number;
+  values: string[];
+  reason: string;
+}
+
+export interface UnifiedTransactionTable {
+  id: string;
+  documentId: string;
+  headers: string[];
+  columns: UnifiedColumn[];
+  rows: UnifiedRow[];
+  summaryRows: UnifiedSummaryRow[];
+  sourceTableIds: string[];
+  sourcePages: number[];
+  rowCount: number;
+  columnCount: number;
+  diagnostics: {
+    physicalTableCount: number;
+    transactionCandidateCount: number;
+    rejectedTableCount: number;
+    repeatedHeaderRowsRemoved: number;
+    summaryRowsSeparated: number;
+    columnAlignmentWarnings: number;
+    projectionDurationMs: number;
+    logicalGroupCount: number;
+  };
+}
+
