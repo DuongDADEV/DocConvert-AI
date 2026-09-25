@@ -5,6 +5,24 @@ import bcrypt from 'bcryptjs';
 import { getSupabaseAdminClient, createSupabaseUserClient } from '../services/supabaseClient.js';
 import { OCRAnalysisResult, OCRMetadataItem } from '../services/ocr/types.js';
 import { MetadataFilterEngine, SEMANTIC_TYPE_ORDER } from '../services/ocr/metadataFilterEngine.js';
+import { PreflightSummary } from '../services/preflightService.js';
+
+export interface DocumentPageRecord {
+  id?: string;
+  document_id: string;
+  page_number: number;
+  classification: 'NATIVE_TEXT' | 'SCANNED' | 'MIXED' | 'UNCERTAIN';
+  classification_confidence: number;
+  text_char_count: number;
+  text_block_count: number;
+  text_coverage: number;
+  image_count: number;
+  image_coverage: number;
+  has_full_page_image: boolean;
+  classification_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
 
 export interface DocumentMetadataRecord {
   id: string;
@@ -93,7 +111,9 @@ export interface DocumentRecord {
   storage_bucket: string; // 'documents'
   storage_path: string; // documents/{user_id}/{document_id}/original/{file_name}
   document_type: string;
-  status: 'UPLOADED' | 'QUEUED' | 'PROCESSING' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED' | 'DELETED';
+  status: 'UPLOADED' | 'WAITING_CONFIRMATION' | 'QUEUED' | 'PROCESSING' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED' | 'DELETED';
+  preflight_summary?: PreflightSummary | null;
+  output_type?: 'EXCEL' | 'WORD' | string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -468,19 +488,24 @@ class DatabaseService {
   // --- DOCUMENTS ---
   async getUserDocuments(userId: string, userToken?: string): Promise<DocumentRecord[]> {
     const client = this.getClient(userToken);
-    const { data } = await client
+    const { data, error } = await client
       .from('documents')
       .select('*')
       .eq('user_id', userId)
       .is('deleted_at', null)
       .order('created_at', { ascending: false });
 
-    return data || [];
+    if (error) {
+      console.error('[getUserDocuments] Error fetching user documents:', error);
+      throw error;
+    }
+
+    return (data || []) as DocumentRecord[];
   }
 
   async getUserDocumentById(userId: string, documentId: string, userToken?: string): Promise<DocumentRecord | null> {
     const client = this.getClient(userToken);
-    const { data } = await client
+    const { data, error } = await client
       .from('documents')
       .select('*')
       .eq('id', documentId)
@@ -488,7 +513,12 @@ class DatabaseService {
       .is('deleted_at', null)
       .maybeSingle();
 
-    return data || null;
+    if (error) {
+      console.error(`[getUserDocumentById] Error fetching document ${documentId}:`, error);
+      throw error;
+    }
+
+    return (data as DocumentRecord) || null;
   }
 
   async createDocument(doc: Partial<DocumentRecord>, userToken?: string): Promise<DocumentRecord> {
@@ -508,6 +538,8 @@ class DatabaseService {
       storage_path: doc.storage_path || '',
       document_type: doc.document_type || 'BANK_STATEMENT',
       status: doc.status || 'QUEUED',
+      preflight_summary: doc.preflight_summary ?? null,
+      output_type: (doc.output_type as any) || 'EXCEL',
       created_at: now,
       updated_at: now,
       deleted_at: null,
@@ -515,10 +547,10 @@ class DatabaseService {
 
     const { data, error } = await client.from('documents').insert(newDoc).select().single();
     if (error) {
-      console.error('[createDocument] Error creating document:', error);
+      console.error('[createDocument] Error creating document in Supabase:', error);
       throw error;
     }
-    return data || newDoc;
+    return (data as DocumentRecord) || newDoc;
   }
 
   async updateDocumentStatus(userId: string, documentId: string, status: DocumentRecord['status']): Promise<DocumentRecord | null> {
@@ -533,6 +565,84 @@ class DatabaseService {
       .single();
 
     return data || null;
+  }
+
+  /**
+   * Atomic state transition guard for /process idempotency:
+   * Only transitions if current status === fromStatus (e.g. WAITING_CONFIRMATION -> QUEUED).
+   * Prevents duplicate clicks, double-processing, and parallel race conditions.
+   */
+  async transitionDocumentStatus(
+    userId: string,
+    documentId: string,
+    fromStatus: DocumentRecord['status'],
+    toStatus: DocumentRecord['status'],
+    outputType?: 'EXCEL' | 'WORD' | string,
+    userToken?: string
+  ): Promise<DocumentRecord | null> {
+    const client = this.getClient(userToken);
+    const now = new Date().toISOString();
+
+    const updatePayload: any = { status: toStatus, updated_at: now };
+    if (outputType) {
+      updatePayload.output_type = outputType;
+    }
+
+    const { data, error } = await client
+      .from('documents')
+      .update(updatePayload)
+      .eq('id', documentId)
+      .eq('user_id', userId)
+      .eq('status', fromStatus)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      console.error('[transitionDocumentStatus] Error in Supabase:', error.message);
+      throw error;
+    }
+
+    return (data as DocumentRecord) || null;
+  }
+
+  // --- DOCUMENT PAGES (PREFLIGHT NORMALIZED TABLE) ---
+  async createDocumentPages(pages: DocumentPageRecord[], userToken?: string): Promise<DocumentPageRecord[]> {
+    if (!pages || pages.length === 0) return [];
+    const client = this.getClient(userToken);
+
+    const formattedPages = pages.map((p) => ({
+      ...p,
+      id: p.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)
+        ? p.id
+        : crypto.randomUUID(),
+    }));
+
+    const { data, error } = await client.from('document_pages').insert(formattedPages).select();
+    if (error) {
+      console.error('[createDocumentPages] Supabase error:', error.message);
+      throw new Error(`Lỗi khi lưu thông tin trang tài liệu vào database: ${error.message}`);
+    }
+
+    return (data || formattedPages) as DocumentPageRecord[];
+  }
+
+  async getDocumentPages(userId: string, documentId: string, userToken?: string): Promise<DocumentPageRecord[]> {
+    const doc = await this.getUserDocumentById(userId, documentId, userToken);
+    if (!doc) return [];
+
+    const client = this.getClient(userToken);
+    const { data, error } = await client
+      .from('document_pages')
+      .select('*')
+      .eq('document_id', documentId)
+      .order('page_number', { ascending: true });
+
+    if (error) {
+      console.error('[getDocumentPages] Supabase error:', error.message);
+      throw new Error(`Lỗi khi tải danh sách trang từ database: ${error.message}`);
+    }
+
+    return (data || []) as DocumentPageRecord[];
   }
 
   async updateDocumentPageCount(userId: string, documentId: string, pageCount: number): Promise<DocumentRecord | null> {
@@ -1012,19 +1122,7 @@ class DatabaseService {
       documentMetadata = pages[0].metadata.documentMetadata;
     }
 
-    // Stable CORE display ordering
-    documentMetadata.sort((a, b) => {
-      if (a.visibilityClass === 'CORE' && b.visibilityClass !== 'CORE') return -1;
-      if (a.visibilityClass !== 'CORE' && b.visibilityClass === 'CORE') return 1;
-
-      if (a.visibilityClass === 'CORE' && b.visibilityClass === 'CORE') {
-        const orderA = a.semanticType ? SEMANTIC_TYPE_ORDER[a.semanticType] || 99 : 99;
-        const orderB = b.semanticType ? SEMANTIC_TYPE_ORDER[b.semanticType] || 99 : 99;
-        if (orderA !== orderB) return orderA - orderB;
-      }
-
-      return a.sourcePage - b.sourcePage;
-    });
+    documentMetadata = MetadataFilterEngine.canonicalizeMetadata(documentMetadata);
 
     return {
       document: doc,

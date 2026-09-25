@@ -479,5 +479,63 @@ test('13. should classify generic Vietnamese and English reference headers as RE
   }
 });
 
+// Test 10: Section 8 Semantic Safety Tests for Balance and Trailing Columns
+test('10. Semantic Safety Tests: single vs duplicate balance and positional fallback guards', () => {
+  // A. Headers: Date | Ref | Description | Debit | Credit | Balance -> exactly one BALANCE
+  const headersA = ['Date', 'Ref', 'Description', 'Debit', 'Credit', 'Balance'];
+  const typesA = headersA.map((h, i) => UnifiedTableService.inferSemanticType(h, i, headersA.length, {}, headersA));
+  assert.strictEqual(typesA.filter(t => t === 'BALANCE').length, 1);
+  assert.strictEqual(typesA[5], 'BALANCE');
+
+  // B. Headers: Date | Ref | Description | Debit | Credit | Balance | GDV -> Balance=BALANCE, GDV=OTHER
+  const headersB = ['Date', 'Ref', 'Description', 'Debit', 'Credit', 'Balance', 'GDV'];
+  const typesB = headersB.map((h, i) => UnifiedTableService.inferSemanticType(h, i, headersB.length, {}, headersB));
+  assert.strictEqual(typesB.filter(t => t === 'BALANCE').length, 1);
+  assert.strictEqual(typesB[5], 'BALANCE');
+  assert.strictEqual(typesB[6], 'OTHER');
+
+  // C. Headers: Date | Ref | Description | Debit | Credit | Balance | Teller Code -> exactly one BALANCE
+  const headersC = ['Date', 'Ref', 'Description', 'Debit', 'Credit', 'Balance', 'Teller Code'];
+  const typesC = headersC.map((h, i) => UnifiedTableService.inferSemanticType(h, i, headersC.length, {}, headersC));
+  assert.strictEqual(typesC.filter(t => t === 'BALANCE').length, 1);
+  assert.strictEqual(typesC[5], 'BALANCE');
+  assert.strictEqual(typesC[6], 'OTHER');
+
+  // D. Headers: Date | Ref | Description | Debit | Credit | Current Balance | Available Balance
+  // Preserve explicit semantics if both match balance keywords; do not blindly collapse explicit semantics
+  const headersD = ['Date', 'Ref', 'Description', 'Debit', 'Credit', 'Current Balance', 'Available Balance'];
+  const typesD = headersD.map((h, i) => UnifiedTableService.inferSemanticType(h, i, headersD.length, {}, headersD));
+  assert.strictEqual(typesD[5], 'BALANCE');
+  assert.strictEqual(typesD[6], 'BALANCE');
+
+  // E. Five-column generic table where last column really is Balance but header OCR is weak/empty
+  // Ensure positional fallback still works when table genuinely lacks explicit balance recognition
+  const headersE = ['Ngay', 'Dien giai', 'Rut ra', 'Gui vao', 'Col5UnknownHeader'];
+  const typesE = headersE.map((h, i) => UnifiedTableService.inferSemanticType(h, i, headersE.length, {}, headersE));
+  assert.strictEqual(typesE[4], 'BALANCE'); // Positional fallback kicks in because no explicit balance exists
+
+  // F. Real Bản Việt 9-column headers
+  const headersBV = [
+    'SỐ GD',
+    'NGÀY GD',
+    'NGÀY GIÁ TRỊ',
+    'SỐ TIỀN GHI CÓ',
+    'SỐ TIỀN GHI NỢ',
+    'LÃI SUẤT',
+    'SỐ DƯ',
+    'NỘI DUNG',
+    'GDV',
+  ];
+  const canonicalColsBV = UnifiedTableService.deriveCanonicalColumns(
+    { headers: headersBV, columnCount: 9, id: 't-bv', pageNumber: 1, tableIndex: 1, rows: [] },
+    []
+  );
+  assert.strictEqual(canonicalColsBV[6].semanticType, 'BALANCE');
+  assert.strictEqual(canonicalColsBV[8].semanticType, 'OTHER');
+  const balanceColsBV = canonicalColsBV.filter(c => c.semanticType === 'BALANCE');
+  assert.strictEqual(balanceColsBV.length, 1);
+});
+
 console.log('All UnifiedTableService Unit Tests Passed Successfully!');
+
 

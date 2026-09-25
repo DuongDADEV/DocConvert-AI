@@ -1,4 +1,4 @@
-import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem, OCRMetadataItem, UnifiedTransactionTable } from '../types';
+import { User, QuotaInfo, DocumentItem, ProcessingJob, Plan, AuditLog, ExportItem, OCRMetadataItem, UnifiedTransactionTable, PreflightDetails } from '../types';
 
 const getApiBase = (): string => {
   const envUrl = (import.meta as any).env?.VITE_API_URL;
@@ -99,11 +99,44 @@ class ApiClient {
   async uploadDocument(file: File) {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('originalName', file.name);
 
     const res = await fetch(`${API_BASE}/documents/upload`, {
       method: 'POST',
       headers: this.getHeaders(true),
       body: formData,
+    });
+    return this.handleResponse<{
+      success: boolean;
+      message: string;
+      document: DocumentItem;
+      preflight: PreflightDetails;
+      job?: ProcessingJob;
+      quota: QuotaInfo;
+    }>(res);
+  }
+
+  async getDocumentPreflight(documentId: string) {
+    const res = await fetch(`${API_BASE}/documents/${documentId}/preflight`, {
+      method: 'GET',
+      headers: this.getHeaders(),
+    });
+    return this.handleResponse<{
+      success: boolean;
+      document: DocumentItem;
+      pageCount: number;
+      summary: PreflightDetails['summary'];
+      pages: PreflightDetails['pages'];
+      estimatedCredits: number;
+      outputType: string;
+    }>(res);
+  }
+
+  async confirmDocumentProcessing(documentId: string, outputType: 'EXCEL' | 'WORD' = 'EXCEL') {
+    const res = await fetch(`${API_BASE}/documents/${documentId}/process`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ outputType }),
     });
     return this.handleResponse<{
       success: boolean;

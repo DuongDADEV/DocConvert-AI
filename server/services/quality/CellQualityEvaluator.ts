@@ -48,10 +48,13 @@ export interface ColumnQualityProfile {
   dominantMoneyPattern?: MoneyFormatPattern;
   dominantDatePattern?: DateFormatPattern;
   referenceSampleValues?: string[];
+  textSampleValues?: string[];
   sampleCount: number;
 }
 
 export class CellQualityEvaluator {
+  public static readonly MIN_STRUCTURED_TEXT_PEER_COUNT = 5;
+  public static readonly MIN_STRUCTURED_TEXT_PEER_SUPPORT = 0.85; // Conservative 85% activation threshold
   private static TELLER_CODE_REGEX = /\b(gdv|teller|teller\s*code|nguoi\s*tao|nguoi\s*lap|ma\s*gdv|user|operator)\b/i;
   private static REFERENCE_HEADER_REGEX = /\b(ref|reference|so\s*gd|so\s*giao\s*dich|ma\s*gd|ma\s*giao\s*dich|transaction\s*no|trans\s*no|document\s*no|doc\s*no|chung\s*tu|so\s*ct|mgd|tham\s*chieu)\b/i;
 
@@ -146,6 +149,8 @@ export class CellQualityEvaluator {
         profile.dominantDatePattern = this.deriveDominantDatePattern(sampleValues);
       } else if (effectiveRole === 'REFERENCE') {
         profile.referenceSampleValues = sampleValues;
+      } else if (effectiveRole === 'TEXT') {
+        profile.textSampleValues = sampleValues;
       }
 
       return profile;
@@ -295,6 +300,12 @@ export class CellQualityEvaluator {
           const descAssessment = this.evaluateDescriptionCell(raw);
           reasons.push(...descAssessment.reasons);
           severity = this.escalateSeverity(severity, descAssessment.severity);
+          break;
+        }
+        case 'TEXT': {
+          const textAssessment = this.evaluateStructuredTextCell(raw, profile.textSampleValues);
+          reasons.push(...textAssessment.reasons);
+          severity = this.escalateSeverity(severity, textAssessment.severity);
           break;
         }
       }
@@ -834,6 +845,116 @@ export class CellQualityEvaluator {
     }
 
     return { severity: 'PASS', reasons: [] };
+  }
+
+  /**
+   * Evaluates generic structured text / code cells against same-column peer distribution.
+   * Detects structural anomalies (e.g. stamp/signature/noise contamination) in columns
+   * where >= 85% of peers follow a stable single-line, single-token, or code format.
+   *
+   * Purely relative to peers: does NOT prohibit hyphens, underscores, dots, or slashes
+   * when they are present in peer codes.
+   * Abstains if fewer than 5 peers or if column is heterogeneous.
+   */
+  public static evaluateStructuredTextCell(
+    val: string,
+    allColumnValues?: string[]
+  ): { severity: QualitySeverity; reasons: QualityReason[] } {
+    const trimmed = (val || '').trim();
+    const noResult = { severity: 'PASS' as QualitySeverity, reasons: [] };
+
+    if (!trimmed || trimmed === '-' || trimmed === '—' || !allColumnValues || allColumnValues.length === 0) {
+      return noResult;
+    }
+
+    // A. Leave-one-out peer filtering (exclude current occurrence of val)
+    const validPeers = allColumnValues
+      .map((v) => (v || '').trim())
+      .filter((v) => v !== '' && v !== '-' && v !== '—' && !/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(v));
+
+    const peerIndex = validPeers.indexOf(trimmed);
+    const peers = peerIndex !== -1
+      ? [...validPeers.slice(0, peerIndex), ...validPeers.slice(peerIndex + 1)]
+      : validPeers;
+
+    // Minimum peer count requirement (at least 5 peers)
+    if (peers.length < this.MIN_STRUCTURED_TEXT_PEER_COUNT) {
+      return noResult;
+    }
+
+    // B. Peer baseline characteristics
+    const peerLines = peers.map((p) => p.split('\n').length);
+    const peerTokens = peers.map((p) => p.split(/\s+/).length);
+    const peerLengths = peers.map((p) => p.length);
+    const peerWhitespace = peers.map((p) => /\s/.test(p));
+    // Non-word punctuation characters: [^\w\s] where \w includes letters, digits, and underscores
+    const peerHasPunct = peers.map((p) => /[^\w\s]/u.test(p));
+
+    const singleLinePeers = peerLines.filter((l) => l === 1).length;
+    const singleTokenPeers = peerTokens.filter((t) => t === 1).length;
+    const whitespaceFreePeers = peerWhitespace.filter((w) => !w).length;
+    const punctFreePeers = peerHasPunct.filter((p) => !p).length;
+
+    const singleLineRatio = singleLinePeers / peers.length;
+    const singleTokenRatio = singleTokenPeers / peers.length;
+    const whitespaceFreeRatio = whitespaceFreePeers / peers.length;
+    const punctFreeRatio = punctFreePeers / peers.length;
+
+    const sortedLens = [...peerLengths].sort((a, b) => a - b);
+    // Robust upper bound at 85th percentile prevents multi-outlier inflation of max length
+    const robustMaxLen = sortedLens[Math.floor(sortedLens.length * this.MIN_STRUCTURED_TEXT_PEER_SUPPORT)] || sortedLens[sortedLens.length - 1];
+
+    // C. Candidate characteristics
+    const candLines = val.split('\n').length;
+    const candTokens = trimmed.split(/\s+/).length;
+    const candHasWhitespace = /\s/.test(trimmed);
+    const candHasPunct = /[^\w\s]/u.test(trimmed);
+    const candLen = trimmed.length;
+
+    // D. Anomaly Detection
+    // We require the column to have a dominant structural pattern (>= 85% peer support)
+    const isSingleLineDominant = singleLineRatio >= this.MIN_STRUCTURED_TEXT_PEER_SUPPORT;
+    const isSingleTokenDominant = singleTokenRatio >= this.MIN_STRUCTURED_TEXT_PEER_SUPPORT && whitespaceFreeRatio >= this.MIN_STRUCTURED_TEXT_PEER_SUPPORT;
+    const isPunctFreeDominant = punctFreeRatio >= this.MIN_STRUCTURED_TEXT_PEER_SUPPORT;
+
+    // If column has no stable single-line or single-token structure, it is heterogeneous -> abstain
+    if (!isSingleLineDominant && !isSingleTokenDominant) {
+      return noResult;
+    }
+
+    let isOutlier = false;
+
+    // Anomaly 1: Multi-line intrusion in an overwhelmingly single-line column
+    if (isSingleLineDominant && candLines > 1) {
+      isOutlier = true;
+    }
+
+    // Anomaly 2: Multi-token or whitespace intrusion in an overwhelmingly single-token/code column
+    if (isSingleTokenDominant && (candTokens >= 2 || candHasWhitespace)) {
+      isOutlier = true;
+    }
+
+    // Anomaly 3: Unexpected foreign punctuation in an overwhelmingly punctuation-free column with length deviation
+    if (isPunctFreeDominant && candHasPunct && candLen > robustMaxLen) {
+      isOutlier = true;
+    }
+
+    // Anomaly 4: Extreme length deviation in a single-token code column (e.g. > 1.5x robust max peer length and >= 15 chars)
+    if (isSingleTokenDominant && candLen > Math.max(15, robustMaxLen * 1.5)) {
+      isOutlier = true;
+    }
+
+    if (isOutlier) {
+      return {
+        severity: 'WARNING',
+        reasons: [{
+          code: 'COLUMN_STRUCTURE_OUTLIER',
+          message: 'Cấu trúc ô khác biệt bất thường so với các ô cùng cột',
+        }],
+      };
+    }
+
+    return noResult;
   }
 
   /**

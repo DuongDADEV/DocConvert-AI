@@ -82,11 +82,34 @@ CREATE TABLE IF NOT EXISTS public.documents (
     storage_bucket VARCHAR(100) NOT NULL DEFAULT 'documents',
     storage_path TEXT NOT NULL,
     document_type VARCHAR(50) DEFAULT 'BANK_STATEMENT',
-    status VARCHAR(50) NOT NULL DEFAULT 'QUEUED', -- UPLOADED, QUEUED, PROCESSING, REVIEW_REQUIRED, READY, FAILED, DELETED
+    status VARCHAR(50) NOT NULL DEFAULT 'QUEUED', -- UPLOADED, WAITING_CONFIRMATION, QUEUED, PROCESSING, REVIEW_REQUIRED, READY, FAILED, DELETED
+    preflight_summary JSONB NULL,
+    output_type VARCHAR(20) NOT NULL DEFAULT 'EXCEL' CHECK (output_type IN ('EXCEL', 'WORD')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at TIMESTAMPTZ
 );
+
+-- 6.1 DOCUMENT PAGES TABLE (Preflight normalized page metrics)
+CREATE TABLE IF NOT EXISTS public.document_pages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL REFERENCES public.documents(id) ON DELETE CASCADE,
+    page_number INTEGER NOT NULL CHECK (page_number >= 1),
+    classification VARCHAR(50) NOT NULL CHECK (classification IN ('NATIVE_TEXT', 'SCANNED', 'MIXED', 'UNCERTAIN')),
+    classification_confidence NUMERIC(5, 4) NOT NULL DEFAULT 1.0000 CHECK (classification_confidence BETWEEN 0 AND 1),
+    text_char_count INTEGER NOT NULL DEFAULT 0 CHECK (text_char_count >= 0),
+    text_block_count INTEGER NOT NULL DEFAULT 0 CHECK (text_block_count >= 0),
+    text_coverage NUMERIC(5, 4) NOT NULL DEFAULT 0.0000 CHECK (text_coverage BETWEEN 0 AND 1),
+    image_count INTEGER NOT NULL DEFAULT 0 CHECK (image_count >= 0),
+    image_coverage NUMERIC(5, 4) NOT NULL DEFAULT 0.0000 CHECK (image_coverage BETWEEN 0 AND 1),
+    has_full_page_image BOOLEAN NOT NULL DEFAULT FALSE,
+    classification_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT unq_document_page UNIQUE (document_id, page_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_pages_document_id ON public.document_pages(document_id);
 
 -- 7. PROCESSING JOBS TABLE
 CREATE TABLE IF NOT EXISTS public.processing_jobs (
@@ -319,6 +342,39 @@ CREATE POLICY documents_select_own ON public.documents FOR SELECT USING (user_id
 CREATE POLICY documents_insert_own ON public.documents FOR INSERT WITH CHECK (user_id = auth.uid());
 CREATE POLICY documents_update_own ON public.documents FOR UPDATE USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
 CREATE POLICY documents_delete_own ON public.documents FOR DELETE USING (user_id = auth.uid());
+
+-- 5.1 DOCUMENT PAGES POLICIES
+ALTER TABLE public.document_pages ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS document_pages_select_own ON public.document_pages;
+DROP POLICY IF EXISTS document_pages_insert_own ON public.document_pages;
+DROP POLICY IF EXISTS document_pages_update_own ON public.document_pages;
+DROP POLICY IF EXISTS document_pages_delete_own ON public.document_pages;
+
+CREATE POLICY document_pages_select_own ON public.document_pages 
+FOR SELECT USING (
+    document_id IN (SELECT id FROM public.documents WHERE user_id = auth.uid())
+);
+CREATE POLICY document_pages_insert_own ON public.document_pages 
+FOR INSERT WITH CHECK (
+    document_id IN (SELECT id FROM public.documents WHERE user_id = auth.uid())
+);
+CREATE POLICY document_pages_update_own ON public.document_pages 
+FOR UPDATE 
+USING (
+    document_id IN (SELECT id FROM public.documents WHERE user_id = auth.uid())
+)
+WITH CHECK (
+    document_id IN (SELECT id FROM public.documents WHERE user_id = auth.uid())
+);
+CREATE POLICY document_pages_delete_own ON public.document_pages 
+FOR DELETE USING (
+    document_id IN (SELECT id FROM public.documents WHERE user_id = auth.uid())
+);
+
+REVOKE ALL ON TABLE public.document_pages FROM anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.document_pages TO authenticated;
+GRANT ALL ON TABLE public.document_pages TO service_role;
+GRANT ALL ON TABLE public.document_pages TO postgres;
 
 -- 6. PROCESSING JOBS POLICIES
 DROP POLICY IF EXISTS processing_jobs_select_own ON public.processing_jobs;

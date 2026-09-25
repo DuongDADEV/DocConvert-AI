@@ -678,7 +678,7 @@ export class UnifiedTableService {
     return headers.map((rawHeader, idx) => {
       const displayHeader = rawHeader && rawHeader.trim() ? rawHeader.trim() : `Cột ${idx + 1}`;
       const normalizedHeader = normalizeVietnameseText(displayHeader);
-      const semanticType = this.inferSemanticType(displayHeader, idx, headers.length, canonicalTable);
+      const semanticType = this.inferSemanticType(displayHeader, idx, headers.length, canonicalTable, headers);
 
       return {
         canonicalColumnIndex: idx,
@@ -696,7 +696,8 @@ export class UnifiedTableService {
     header: string,
     columnIndex: number,
     totalColumns: number,
-    table: any
+    table: any,
+    allHeaders?: string[]
   ): SemanticColumnType {
     const norm = normalizeVietnameseText(header);
 
@@ -759,11 +760,21 @@ export class UnifiedTableService {
       return 'BALANCE';
     }
 
+    // Check if an explicit balance column already exists elsewhere in this table schema
+    const headersList = allHeaders || (Array.isArray(table?.headers) ? table.headers : undefined);
+    const hasExplicitBalanceElsewhere = headersList
+      ? headersList.some((h: string, idx: number) => {
+          if (idx === columnIndex) return false;
+          const hNorm = normalizeVietnameseText(h);
+          return hNorm.includes('so du') || hNorm.includes('balance');
+        })
+      : false;
+
     // Fallback based on typical position heuristics:
     if (columnIndex === 0 && (norm.includes('stt') || totalColumns >= 7)) {
       return 'STT';
     }
-    if (columnIndex === totalColumns - 1 && totalColumns >= 5) {
+    if (columnIndex === totalColumns - 1 && totalColumns >= 5 && !hasExplicitBalanceElsewhere) {
       return 'BALANCE';
     }
 
@@ -803,7 +814,7 @@ export class UnifiedTableService {
       if (mapping[sIdx] !== -1) continue;
 
       const sHeader = sourceHeaders[sIdx] || '';
-      const sType = this.inferSemanticType(sHeader, sIdx, sourceColCount, table);
+      const sType = this.inferSemanticType(sHeader, sIdx, sourceColCount, table, sourceHeaders);
 
       if (sType !== 'OTHER') {
         for (let cIdx = 0; cIdx < canonicalColumns.length; cIdx++) {

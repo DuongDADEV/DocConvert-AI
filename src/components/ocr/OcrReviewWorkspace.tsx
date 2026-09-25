@@ -22,6 +22,8 @@ import {
   CheckSquare,
   AlertCircle,
   GripVertical,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { DocumentItem, DocumentOCRData, ExtractedTable, ExtractedRow, ExtractedCell, OCRMetadataItem, UnifiedTransactionTable, UnifiedRow, UnifiedCell } from '../../types';
 import { api } from '../../services/api';
@@ -41,8 +43,8 @@ export interface DocumentMetadataItem {
 const SEMANTIC_VI_LABELS: Record<string, string> = {
   ACCOUNT_HOLDER: 'Chủ tài khoản',
   ACCOUNT_NUMBER: 'Số tài khoản',
-  CUSTOMER_ID: 'Mã khách hàng',
-  TAX_CODE: 'Mã số thuế / CIF',
+  CUSTOMER_ID: 'Mã khách hàng / CIF',
+  TAX_CODE: 'Mã số thuế',
   CURRENCY: 'Loại tiền',
   ACCOUNT_TYPE: 'Loại tài khoản',
   BRANCH: 'Chi nhánh',
@@ -50,6 +52,11 @@ const SEMANTIC_VI_LABELS: Record<string, string> = {
   STATEMENT_DATE: 'Ngày sao kê',
   STATEMENT_FROM: 'Từ ngày',
   STATEMENT_TO: 'Đến ngày',
+  STATEMENT_PERIOD: 'Kỳ sao kê',
+  OPENING_DATE: 'Ngày mở',
+  OPENING_BALANCE: 'Số dư đầu kỳ',
+  CLOSING_BALANCE: 'Số dư cuối kỳ',
+  STATEMENT_TIMESTAMP: 'Thời gian in',
 };
 
 // Display priority order for CORE metadata
@@ -79,6 +86,7 @@ export const QUALITY_REASON_LABELS: Record<string, string> = {
   MULTIPLE_SEPARATOR_NOISE: 'Có dấu phân cách bất thường',
   FORMAT_OUTLIER: 'Định dạng khác với phần lớn dữ liệu trong cột',
   REFERENCE_STRUCTURE_OUTLIER: 'Cấu trúc mã khác với phần lớn dữ liệu trong cột',
+  COLUMN_STRUCTURE_OUTLIER: 'Nội dung có cấu trúc khác thường so với các ô cùng cột',
   POSSIBLE_CHARACTER_CONFUSION: 'Có khả năng OCR nhầm ký tự',
   DATE_TEXT_CONTAMINATION: 'Chứa văn bản lạ trong ô ngày tháng',
   INVALID_DATE_STRUCTURE: 'Cấu trúc ngày tháng không hợp lệ',
@@ -169,18 +177,12 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   const [splitPercent, setSplitPercent] = useState<number>(40);
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
-  // DOM Refs for Split Container and Two-Way Horizontal Scroll Synchronization
+  // DOM Refs for Split Container and Table Scrolling
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
-  const horizontalScrollbarRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
-  const isSyncingScrollRef = useRef<'table' | 'bar' | null>(null);
   const latestClientXRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
-
-  // Dynamic real scroll metrics for bottom sticky horizontal scrollbar
-  const [tableScrollWidth, setTableScrollWidth] = useState<number>(0);
-  const [hasHorizontalOverflow, setHasHorizontalOverflow] = useState<boolean>(false);
 
   // Table & Editing State
   const [selectedTableIndex, setSelectedTableIndex] = useState(0);
@@ -195,6 +197,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   // Filter & Search State
   const [filterLowConfidenceOnly, setFilterLowConfidenceOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isTableFocused, setIsTableFocused] = useState(false);
 
 
   // Action States
@@ -281,53 +284,9 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     };
   }, [documentId]);
 
-  // --- 3. TWO-WAY HORIZONTAL SCROLL SYNCHRONIZATION ---
-  const handleTableScroll = useCallback(() => {
-    if (!tableScrollRef.current || !horizontalScrollbarRef.current) return;
-    if (isSyncingScrollRef.current === 'bar') return;
-    isSyncingScrollRef.current = 'table';
-    horizontalScrollbarRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
-    requestAnimationFrame(() => {
-      if (isSyncingScrollRef.current === 'table') {
-        isSyncingScrollRef.current = null;
-      }
-    });
-  }, []);
-
-  const handleHorizontalBarScroll = useCallback(() => {
-    if (!tableScrollRef.current || !horizontalScrollbarRef.current) return;
-    if (isSyncingScrollRef.current === 'table') return;
-    isSyncingScrollRef.current = 'bar';
-    tableScrollRef.current.scrollLeft = horizontalScrollbarRef.current.scrollLeft;
-    requestAnimationFrame(() => {
-      if (isSyncingScrollRef.current === 'bar') {
-        isSyncingScrollRef.current = null;
-      }
-    });
-  }, []);
-
-  // Update real table scroll dimensions using ResizeObserver
-  const updateScrollDimensions = useCallback(() => {
-    const tableEl = tableRef.current;
-    const scrollEl = tableScrollRef.current;
-    if (!tableEl || !scrollEl) return;
-
-    const realScrollWidth = Math.max(tableEl.scrollWidth, scrollEl.scrollWidth);
-    const clientWidth = scrollEl.clientWidth;
-
-    setTableScrollWidth(realScrollWidth);
-    setHasHorizontalOverflow(realScrollWidth > clientWidth + 2);
-
-    if (horizontalScrollbarRef.current) {
-      horizontalScrollbarRef.current.scrollLeft = scrollEl.scrollLeft;
-    }
-  }, []);
-
-
   // Reset horizontal scroll position when active table changes
   useEffect(() => {
     if (tableScrollRef.current) tableScrollRef.current.scrollLeft = 0;
-    if (horizontalScrollbarRef.current) horizontalScrollbarRef.current.scrollLeft = 0;
   }, [selectedTableIndex]);
 
   // --- 4. STABLE SPLIT PANE POINTER HANDLERS ---
@@ -571,24 +530,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     return result;
   }, [isUnified, unifiedTable, activeTable, columnCount]);
 
-  // Synchronize ResizeObserver with table, column count, and split width changes
-  useEffect(() => {
-    const tableEl = tableRef.current;
-    const scrollEl = tableScrollRef.current;
-    if (!tableEl || !scrollEl) return;
 
-    const observer = new ResizeObserver(() => {
-      updateScrollDimensions();
-    });
-
-    observer.observe(tableEl);
-    observer.observe(scrollEl);
-    updateScrollDimensions();
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [selectedTableIndex, ocrData, columnCount, splitPercent, isUnified, updateScrollDimensions]);
 
   // Data rows source (unified table or physical table fallback)
   const dataRows = useMemo(() => {
@@ -792,7 +734,8 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     const rawCore = metadataItems.filter((m) => m.visibilityClass === 'CORE');
     const additional = metadataItems.filter((m) => m.visibilityClass === 'ADDITIONAL');
 
-    // Check for STATEMENT_FROM and STATEMENT_TO combination
+    // Check if STATEMENT_PERIOD is already present in rawCore
+    const existingPeriod = rawCore.find((m) => m.semanticType === 'STATEMENT_PERIOD');
     const stmtFrom = rawCore.find((m) => m.semanticType === 'STATEMENT_FROM');
     const stmtTo = rawCore.find((m) => m.semanticType === 'STATEMENT_TO');
 
@@ -808,8 +751,26 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
       status?: string;
     }> = [];
 
-    if (stmtFrom && stmtTo) {
-      // Visually combine them into one item "Kỳ sao kê"
+    if (existingPeriod) {
+      // Backend already provided a canonical STATEMENT_PERIOD item!
+      // Exclude STATEMENT_FROM and STATEMENT_TO from CORE display cards to prevent duplicates
+      for (const item of rawCore) {
+        if (item.semanticType === 'STATEMENT_FROM' || item.semanticType === 'STATEMENT_TO') {
+          continue;
+        }
+        combinedList.push({
+          id: item.id,
+          label: item.semanticType ? SEMANTIC_VI_LABELS[item.semanticType] || item.label : item.label,
+          value: item.value,
+          confidence: item.confidence,
+          qualityScore: item.qualityScore,
+          semanticType: item.semanticType,
+          sourcePage: item.sourcePage,
+          status: item.status,
+        });
+      }
+    } else if (stmtFrom && stmtTo) {
+      // Visually combine them into one item "Kỳ sao kê" only when no STATEMENT_PERIOD exists
       const combinedPeriodItem = {
         id: `combined-period-${stmtFrom.id || 'from'}-${stmtTo.id || 'to'}`,
         label: 'Kỳ sao kê',
@@ -854,15 +815,28 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
       }
     }
 
+    // Singleton Dedup: Ensure each singleton semantic concept appears at most once in CORE cards
+    const seenSemantics = new Set<string>();
+    const deduplicatedCore: typeof combinedList = [];
+    for (const item of combinedList) {
+      if (item.semanticType && item.semanticType !== 'OTHER') {
+        if (seenSemantics.has(item.semanticType)) {
+          continue;
+        }
+        seenSemantics.add(item.semanticType);
+      }
+      deduplicatedCore.push(item);
+    }
+
     // Sort according to preferred display priority
-    combinedList.sort((a, b) => {
+    deduplicatedCore.sort((a, b) => {
       const pA = a.semanticType ? CORE_PRIORITY_ORDER[a.semanticType] || 99 : 99;
       const pB = b.semanticType ? CORE_PRIORITY_ORDER[b.semanticType] || 99 : 99;
       return pA - pB;
     });
 
     return {
-      coreDisplayItems: combinedList,
+      coreDisplayItems: deduplicatedCore,
       additionalItems: additional,
     };
   }, [metadataItems]);
@@ -884,7 +858,10 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-100 truncate max-w-xs sm:max-w-md">
+                <h2
+                  className="text-xs sm:text-sm font-bold text-slate-100 truncate max-w-xs sm:max-w-md"
+                  title={ocrData?.document?.original_filename || 'Tài liệu Đối Soát OCR'}
+                >
                   {ocrData?.document?.original_filename || 'Tài liệu Đối Soát OCR'}
                 </h2>
                 {ocrData?.document && <StatusBadge status={ocrData.document.status} size="sm" />}
@@ -1123,7 +1100,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
 
                 {/* Page Navigation Selector */}
                 {ocrData && (
-                  <div className="flex items-center gap-1 overflow-x-auto">
+                  <div className="flex items-center gap-1">
                     <button
                       onClick={() => setSelectedPageNumber('ALL')}
                       className={`px-2 py-0.5 rounded text-[11px] font-semibold transition shrink-0 ${
@@ -1134,22 +1111,6 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                     >
                       Tất cả
                     </button>
-                    {Array.from(
-                      { length: ocrData.document?.page_count || ocrData.pages?.length || 1 },
-                      (_, i) => i + 1
-                    ).map((pNum) => (
-                      <button
-                        key={pNum}
-                        onClick={() => setSelectedPageNumber(pNum)}
-                        className={`px-2 py-0.5 rounded text-[11px] font-semibold transition shrink-0 ${
-                          selectedPageNumber === pNum
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        P{pNum}
-                      </button>
-                    ))}
                   </div>
                 )}
               </div>
@@ -1365,6 +1326,36 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                 </section>
               )}
 
+              {/* BACKDROP FOR TABLE FOCUS MODE */}
+              {isTableFocused && (
+                <div className="fixed inset-0 bg-black/75 backdrop-blur-xs z-54 transition-opacity" />
+              )}
+
+              {/* TABLE WORKSPACE CONTAINER (NORMAL SPLIT PANE OR FIXED FOCUS OVERLAY) */}
+              <div
+                className={
+                  isTableFocused
+                    ? 'fixed inset-2 sm:inset-4 md:inset-5 z-55 flex flex-col bg-slate-950 border border-slate-700/90 rounded-2xl shadow-2xl shadow-black/90 overflow-hidden'
+                    : 'flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative'
+                }
+              >
+                {/* DEDICATED HEADER FOR FOCUS MODE */}
+                {isTableFocused && (
+                  <div className="px-5 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center gap-2.5 shrink-0">
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shrink-0">
+                      <FileSpreadsheet className="w-4 h-4 text-blue-400" />
+                    </div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-bold text-xs sm:text-sm text-slate-100 truncate">
+                        Bảng dữ liệu trích xuất
+                      </span>
+                      <span className="text-[11px] text-slate-400 font-mono bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/60 shrink-0">
+                        {displayedRows.length} dòng · {columnCount} cột
+                      </span>
+                    </div>
+                  </div>
+                )}
+
               {/* TABLE SWITCHER & CONTROL BAR */}
               <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2.5 shrink-0">
                 {/* Scalable Table Selector Navigator (Rendered only in legacy fallback mode) */}
@@ -1487,6 +1478,31 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                       </span>
                     )}
                   </button>
+
+                  {/* Focus Mode Toggle Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsTableFocused(!isTableFocused)}
+                    className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition shrink-0 cursor-pointer ${
+                      isTableFocused
+                        ? 'bg-blue-600/20 text-blue-300 border-blue-500/50 hover:bg-blue-600/30'
+                        : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-900 hover:text-white hover:border-slate-700'
+                    }`}
+                    title={isTableFocused ? 'Thu nhỏ bảng' : 'Phóng to bảng'}
+                    aria-label={isTableFocused ? 'Thu nhỏ bảng' : 'Phóng to bảng'}
+                  >
+                    {isTableFocused ? (
+                      <>
+                        <Minimize2 className="w-3.5 h-3.5 text-blue-400" />
+                        <span className="inline">Thu nhỏ</span>
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="w-3.5 h-3.5 text-slate-400" />
+                        <span className="hidden sm:inline">Phóng to</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -1495,23 +1511,24 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
               {/* --------------------------------------------------------- */}
               <div className="flex-1 min-h-0 min-w-0 flex flex-col p-3 bg-slate-950 overflow-hidden">
                 <style>{`
-                  .table-viewport-scroll::-webkit-scrollbar:horizontal {
-                    display: none !important;
-                    height: 0 !important;
+                  .table-viewport-scroll {
+                    scrollbar-width: thin;
+                    scrollbar-color: #334155 #090d16;
                   }
-                  .horizontal-scrollbar-dock::-webkit-scrollbar {
+                  .table-viewport-scroll::-webkit-scrollbar {
+                    width: 8px;
                     height: 10px;
                   }
-                  .horizontal-scrollbar-dock::-webkit-scrollbar-track {
+                  .table-viewport-scroll::-webkit-scrollbar-track {
                     background: #090d16;
                     border-radius: 9999px;
                   }
-                  .horizontal-scrollbar-dock::-webkit-scrollbar-thumb {
+                  .table-viewport-scroll::-webkit-scrollbar-thumb {
                     background: #334155;
                     border-radius: 9999px;
                     border: 2px solid #090d16;
                   }
-                  .horizontal-scrollbar-dock::-webkit-scrollbar-thumb:hover {
+                  .table-viewport-scroll::-webkit-scrollbar-thumb:hover {
                     background: #3b82f6;
                   }
                 `}</style>
@@ -1522,13 +1539,10 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                   </div>
                 ) : (
                   <div className="flex-1 min-h-0 min-w-0 flex flex-col relative">
-                    {/* A. TABLE VIEWPORT (Sticky header & rows with synchronized horizontal scroll) */}
+                    {/* A. TABLE VIEWPORT (Sticky header & rows with native horizontal scroll) */}
                     <div
                       ref={tableScrollRef}
-                      onScroll={handleTableScroll}
-                      className={`table-viewport-scroll flex-1 min-h-0 min-w-0 overflow-auto relative border border-slate-800 bg-slate-900/40 shadow-xs focus:outline-none ${
-                        hasHorizontalOverflow ? 'rounded-t-xl border-b-0' : 'rounded-xl'
-                      }`}
+                      className="table-viewport-scroll flex-1 min-h-0 min-w-0 overflow-auto relative border border-slate-800 rounded-xl bg-slate-900/40 shadow-xs focus:outline-none"
                     >
                       <table
                         ref={tableRef}
@@ -1831,28 +1845,12 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                     </table>
                   </div>
 
-                  {/* B. DEDICATED ALWAYS-VISIBLE HORIZONTAL SCROLLBAR DOCK */}
-                  {hasHorizontalOverflow && (
-                    <div
-                      ref={horizontalScrollbarRef}
-                      onScroll={handleHorizontalBarScroll}
-                      className="horizontal-scrollbar-dock shrink-0 w-full bg-slate-950 border border-slate-800 rounded-b-xl overflow-x-auto overflow-y-hidden select-none"
-                      style={{
-                        height: '14px',
-                        scrollbarWidth: 'thin',
-                        scrollbarColor: '#475569 #090d16',
-                      }}
-                      title="Kéo thanh cuộn ngang để xem toàn bộ các cột"
-                    >
-                      <div style={{ width: `${tableScrollWidth}px`, height: '1px' }} />
-                    </div>
-                  )}
                 </div>
               )}
             </div>
 
               {/* FOOTER CAPTION & QUALITY LEGEND */}
-              <div className="px-4 py-2.5 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 shrink-0">
+              <div className="px-4 py-2 bg-slate-950 border-t border-slate-800 flex flex-col gap-1.5 text-xs text-slate-400 shrink-0">
                 <div className="flex items-center gap-4 flex-wrap">
                   <span className="flex items-center gap-1.5 text-[11px] text-slate-400" title="Dữ liệu đồng nhất về cấu trúc, định dạng và độ tin cậy">
                     <span className="w-2 h-2 rounded-full bg-slate-500"></span>
@@ -1871,11 +1869,12 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                     Đã kiểm tra
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-400 max-w-xl text-right">
-                  <span className="text-slate-500">Ghi chú: </span>
-                  Độ tin cậy OCR là tín hiệu từ công cụ nhận dạng, không đồng nghĩa với độ chính xác tuyệt đối. Hệ thống kết hợp kiểm tra cấu trúc để đề xuất ô cần đối soát.
+                <div className="text-[11px] text-slate-400 leading-normal">
+                  <span className="text-slate-500 font-medium">Ghi chú: </span>
+                  Độ tin cậy OCR là tín hiệu hỗ trợ đối soát. Hệ thống sẽ chủ động đánh dấu những nội dung cần lưu ý để bạn kiểm tra nhanh trước khi hoàn tất.
                 </div>
               </div>
+            </div>
             </div>
           </div>
         )}

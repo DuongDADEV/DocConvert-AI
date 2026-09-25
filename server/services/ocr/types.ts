@@ -59,6 +59,7 @@ export interface OCRPage {
   rawText?: string;
   confidence?: number;
   lines?: OCRLine[];
+  angle?: number;
 }
 
 export type SemanticType =
@@ -68,11 +69,16 @@ export type SemanticType =
   | 'TAX_CODE'
   | 'STATEMENT_FROM'
   | 'STATEMENT_TO'
+  | 'STATEMENT_PERIOD'
   | 'STATEMENT_DATE'
   | 'CURRENCY'
   | 'ACCOUNT_TYPE'
   | 'BRANCH'
   | 'ADDRESS'
+  | 'OPENING_DATE'
+  | 'OPENING_BALANCE'
+  | 'CLOSING_BALANCE'
+  | 'STATEMENT_TIMESTAMP'
   | 'OTHER';
 
 export type VisibilityClass = 'CORE' | 'ADDITIONAL' | 'REJECTED';

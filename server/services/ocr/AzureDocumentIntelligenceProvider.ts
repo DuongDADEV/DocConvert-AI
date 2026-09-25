@@ -417,15 +417,16 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
     }
 
     // 4. Content cells:
-    // Short structured cells (Money, Date, Number, or short text <= 3 words): use MIN
+    // Short cells (<= 35 chars, e.g. codes, identifiers, short names, values) or structured types:
+    // use MIN to preserve truthful optical uncertainty on any contained token, even if noise/stamp added extra tokens.
     const isStructured = normalizedCellType === 'MONEY' || normalizedCellType === 'DATE' || normalizedCellType === 'NUMBER';
-    const isShortCell = matchedWords.length <= 3 && raw.length <= 35;
+    const isShortCell = raw.length <= 35;
 
     if (isStructured || isShortCell) {
       const min = Math.min(...wordConfs);
       return { confidence: Number(min.toFixed(4)), source: 'AZURE_WORD_AGGREGATE' };
     } else {
-      // Long free text (Description, Narrative): use MEAN to avoid false positives on single minor tokens
+      // Long free text (> 35 chars, e.g. Narrative, Long Description): use MEAN to avoid false positives on single minor tokens
       const mean = wordConfs.reduce((a, b) => a + b, 0) / wordConfs.length;
       return { confidence: Number(mean.toFixed(4)), source: 'AZURE_WORD_AGGREGATE' };
     }
@@ -455,6 +456,7 @@ export class AzureDocumentIntelligenceProvider implements DocumentAIProvider {
           wordsCount: p.words?.length || 0,
           rawText: p.lines?.map((l: any) => l.content).join('\n') || '',
           lines: pageLines,
+          angle: p.angle,
         });
       }
     }

@@ -11,6 +11,7 @@ import {
   Eye,
   RefreshCw,
   Sparkles,
+  PlayCircle,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { DocumentItem, AuditLog } from '../types';
@@ -24,7 +25,7 @@ import { ErrorAlert } from '../components/common/ErrorAlert';
 
 interface DashboardPageProps {
   onNavigate: (tab: string, documentId?: string) => void;
-  onOpenUpload: () => void;
+  onOpenUpload: (resumeDocId?: string) => void;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpenUpload }) => {
@@ -266,15 +267,27 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onOpen
                         </td>
                         <td className="px-5 py-3.5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              id={`btn-review-doc-${doc.id}`}
-                              onClick={() => onNavigate('documents', doc.id)}
-                              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 flex items-center gap-1 transition"
-                              title="Đối soát bảng & số liệu OCR"
-                            >
-                              <FileSpreadsheet className="w-3.5 h-3.5" />
-                              <span>Đối soát</span>
-                            </button>
+                            {doc.status === 'WAITING_CONFIRMATION' ? (
+                              <button
+                                id={`btn-resume-doc-${doc.id}`}
+                                onClick={() => onOpenUpload(doc.id)}
+                                className="px-2.5 py-1 rounded-lg text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 flex items-center gap-1 transition"
+                                title="Tiếp tục xử lý tài liệu"
+                              >
+                                <PlayCircle className="w-3.5 h-3.5" />
+                                <span>Tiếp tục</span>
+                              </button>
+                            ) : (
+                              <button
+                                id={`btn-review-doc-${doc.id}`}
+                                onClick={() => onNavigate('documents', doc.id)}
+                                className="px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 flex items-center gap-1 transition"
+                                title="Đối soát bảng & số liệu OCR"
+                              >
+                                <FileSpreadsheet className="w-3.5 h-3.5" />
+                                <span>Đối soát</span>
+                              </button>
+                            )}
                             <button
                               id={`btn-view-doc-${doc.id}`}
                               onClick={() => onNavigate('documents', doc.id)}

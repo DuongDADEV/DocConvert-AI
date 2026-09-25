@@ -646,4 +646,219 @@ function createMockRow(cells: UnifiedCell[], displayRowIndex = 0): UnifiedRow {
   console.log('  ✓ 23. Structurally distant singletons (ABC00010, PAY-XYZ-2024) abstain safely');
 }
 
-console.log('\nAll 23 CellQualityEvaluator Unit Tests Passed Successfully!\n');
+// -------------------------------------------------------------
+// 24. STRUCTURED TEXT: Contaminated Outliers in Dominant Code Column
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('GDV (Teller Code)', 'OTHER', 0);
+  const cleanPeers = Array.from({ length: 30 }, () => createMockRow([createMockCell('DUNGTT4', 0, 0.99)]));
+  cleanPeers.push(
+    createMockRow([createMockCell('SYSTEM', 0, 0.99)]),
+    createMockRow([createMockCell('INTERFACE', 0, 0.99)]),
+    createMockRow([createMockCell('SBI', 0, 0.99)]),
+    createMockRow([createMockCell('THANHHN_EOD', 0, 0.99)])
+  );
+
+  // Multi-token stamp contamination
+  const stampRow1 = createMockRow([createMockCell('SBB NGÂN HAN THƯƠNG MẠI C 3 BAN V', 0, 0.90)]);
+  const stampRow2 = createMockRow([createMockCell('ANHHTL - CHINH * NAM SA', 0, 0.90)]);
+  // Multi-line stamp contamination
+  const stampRow3 = createMockRow([createMockCell('5 - T.P\nSBI', 0, 0.95)]);
+  const stampRow4 = createMockRow([createMockCell('- C. T. C.P\nDUNGTT4\nTHAN', 0, 0.90)]);
+  const stampRow5 = createMockRow([createMockCell('DUNGTT4\nGON\n*\nDỊCH\nVH', 0, 0.90)]);
+  // Hyphen length outlier in punctuation-free column
+  const stampRow6 = createMockRow([createMockCell('INTERFACE-PHONG', 0, 0.95)]);
+
+  const rows = [...cleanPeers, stampRow1, stampRow2, stampRow3, stampRow4, stampRow5, stampRow6];
+  CellQualityEvaluator.evaluateTable([col], rows);
+
+  assert.strictEqual(stampRow1.cells[0].qualityAssessment?.severity, 'WARNING', 'Multi-token stamp must be WARNING');
+  assert.strictEqual(stampRow1.cells[0].qualityAssessment?.reasons[0].code, 'COLUMN_STRUCTURE_OUTLIER');
+  assert.strictEqual(stampRow2.cells[0].qualityAssessment?.severity, 'WARNING', 'Token/punct stamp must be WARNING');
+  assert.strictEqual(stampRow3.cells[0].qualityAssessment?.severity, 'WARNING', 'Multi-line stamp must be WARNING');
+  assert.strictEqual(stampRow4.cells[0].qualityAssessment?.severity, 'WARNING', 'Multi-line stamp must be WARNING');
+  assert.strictEqual(stampRow5.cells[0].qualityAssessment?.severity, 'WARNING', 'Multi-line stamp must be WARNING');
+  assert.strictEqual(stampRow6.cells[0].qualityAssessment?.severity, 'WARNING', 'Hyphen length outlier must be WARNING');
+  console.log('  ✓ 24. Contaminated outliers in structured text column correctly flagged as COLUMN_STRUCTURE_OUTLIER (WARNING)');
+}
+
+// -------------------------------------------------------------
+// 25. STRUCTURED TEXT: Clean Controls Evaluate Cleanly to PASS
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('GDV (Teller Code)', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('DUNGTT4', 0, 0.99)]),
+    createMockRow([createMockCell('DUNGTT4', 0, 0.99)]),
+    createMockRow([createMockCell('DUNGTT4', 0, 0.99)]),
+    createMockRow([createMockCell('SYSTEM', 0, 0.99)]),
+    createMockRow([createMockCell('SYSTEM', 0, 0.99)]),
+    createMockRow([createMockCell('INTERFACE', 0, 0.99)]),
+    createMockRow([createMockCell('SBI', 0, 0.99)]),
+    createMockRow([createMockCell('THANHHN_EOD', 0, 0.99)]),
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (const r of rows) {
+    assert.strictEqual(r.cells[0].qualityAssessment?.severity, 'PASS', `${r.cells[0].rawValue} must be PASS`);
+    assert.strictEqual(r.cells[0].qualityAssessment?.reasons.length, 0);
+  }
+  console.log('  ✓ 25. Clean GDV controls evaluate cleanly to PASS with 0 false positives');
+}
+
+// -------------------------------------------------------------
+// 26. STRUCTURED TEXT: Legitimate Hyphen Codes PASS, Outlier WARNING
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('Mã Chi Nhánh', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('HN-01', 0, 0.98)]),
+    createMockRow([createMockCell('HN-02', 0, 0.98)]),
+    createMockRow([createMockCell('SG-01', 0, 0.98)]),
+    createMockRow([createMockCell('DN-04', 0, 0.98)]),
+    createMockRow([createMockCell('HN-05', 0, 0.98)]),
+    createMockRow([createMockCell('HP-03', 0, 0.98)]),
+    createMockRow([createMockCell('CONG TY * HN-01', 0, 0.98)]), // Outlier
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (let i = 0; i < 6; i++) {
+    assert.strictEqual(rows[i].cells[0].qualityAssessment?.severity, 'PASS', 'Normal hyphen code must PASS');
+  }
+  assert.strictEqual(rows[6].cells[0].qualityAssessment?.severity, 'WARNING', 'Contaminated code must be WARNING');
+  console.log('  ✓ 26. Legitimate hyphen codes evaluate to PASS; multi-token outlier flagged as WARNING');
+}
+
+// -------------------------------------------------------------
+// 27. STRUCTURED TEXT: Legitimate Underscore Codes Evaluate to PASS
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('User ID', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('USER_001', 0, 0.98)]),
+    createMockRow([createMockCell('USER_002', 0, 0.98)]),
+    createMockRow([createMockCell('USER_003', 0, 0.98)]),
+    createMockRow([createMockCell('USER_004', 0, 0.98)]),
+    createMockRow([createMockCell('USER_005', 0, 0.98)]),
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (const r of rows) {
+    assert.strictEqual(r.cells[0].qualityAssessment?.severity, 'PASS', 'Normal underscore code must PASS');
+  }
+  console.log('  ✓ 27. Legitimate underscore codes evaluate cleanly to PASS');
+}
+
+// -------------------------------------------------------------
+// 28. STRUCTURED TEXT: Legitimate Dot Codes Evaluate to PASS
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('Mã Phân Loại', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('ABC.01', 0, 0.98)]),
+    createMockRow([createMockCell('ABC.02', 0, 0.98)]),
+    createMockRow([createMockCell('ABC.03', 0, 0.98)]),
+    createMockRow([createMockCell('ABC.04', 0, 0.98)]),
+    createMockRow([createMockCell('ABC.05', 0, 0.98)]),
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (const r of rows) {
+    assert.strictEqual(r.cells[0].qualityAssessment?.severity, 'PASS', 'Normal dot code must PASS');
+  }
+  console.log('  ✓ 28. Legitimate dot codes evaluate cleanly to PASS');
+}
+
+// -------------------------------------------------------------
+// 29. STRUCTURED TEXT: Legitimate Slash Codes Evaluate to PASS
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('Mã Phòng', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('BR/01', 0, 0.98)]),
+    createMockRow([createMockCell('BR/02', 0, 0.98)]),
+    createMockRow([createMockCell('BR/03', 0, 0.98)]),
+    createMockRow([createMockCell('BR/04', 0, 0.98)]),
+    createMockRow([createMockCell('BR/05', 0, 0.98)]),
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (const r of rows) {
+    assert.strictEqual(r.cells[0].qualityAssessment?.severity, 'PASS', 'Normal slash code must PASS');
+  }
+  console.log('  ✓ 29. Legitimate slash codes evaluate cleanly to PASS');
+}
+
+// -------------------------------------------------------------
+// 30. STRUCTURED TEXT: Heterogeneous Mixed Column Negative Control (Abstains)
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('Ghi Chú Chung', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('SYSTEM', 0, 0.98)]),
+    createMockRow([createMockCell('USER_01', 0, 0.98)]),
+    createMockRow([createMockCell('Manual Entry', 0, 0.98)]),
+    createMockRow([createMockCell('HN-01', 0, 0.98)]),
+    createMockRow([createMockCell('INTERFACE-PHONG', 0, 0.98)]),
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (const r of rows) {
+    assert.strictEqual(r.cells[0].qualityAssessment?.severity, 'PASS', 'Mixed column must abstain and evaluate to PASS');
+  }
+  console.log('  ✓ 30. Heterogeneous mixed column correctly abstains from peer outlier warnings');
+}
+
+// -------------------------------------------------------------
+// 31. STRUCTURED TEXT: Small Table Negative Control (Fewer than 5 peers)
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('Mã GDV', 'OTHER', 0);
+  const rows = [
+    createMockRow([createMockCell('USER_01', 0, 0.98)]),
+    createMockRow([createMockCell('USER_02', 0, 0.98)]),
+    createMockRow([createMockCell('STAMP NOISE OVERLAP 123', 0, 0.98)]), // only 2 peers
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  // With only 2 peers (< 5), validator must safely abstain
+  assert.strictEqual(rows[2].cells[0].qualityAssessment?.severity, 'PASS');
+  console.log('  ✓ 31. Small table (< 5 peers) safely abstains from peer outlier warnings');
+}
+
+// -------------------------------------------------------------
+// 32. DESCRIPTION: Negative Control (No False Warnings on Descriptions)
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('DIỄN GIÁI (Narrative)', 'DESCRIPTION', 0);
+  const rows = [
+    createMockRow([createMockCell('THU PHI SAO KE TKTT 0687041113504', 0, 0.98)]),
+    createMockRow([createMockCell('From: NGUYEN THI TUYET LAN NOP TIEN-160724-15:11:13 845141.CT tu 8151', 0, 0.98)]),
+    createMockRow([createMockCell('TRICH TKTT KH NGUYEN THI TUYET LAN THU GOC LAI DEN HAN VA PHAT CHAM GOC', 0, 0.98)]),
+    createMockRow([createMockCell('TRUY THU PHI DUY TRI SO DU TAI KHOAN DUOI MUC TOI THIEU', 0, 0.98)]),
+    createMockRow([createMockCell('NOP TIEN MAT TAI QUAY GIAO DICH PGD AN DONG', 0, 0.98)]),
+  ];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  for (const r of rows) {
+    assert.strictEqual(r.cells[0].qualityAssessment?.severity, 'PASS', 'Legitimate narrative must PASS');
+    assert.strictEqual(r.cells[0].qualityAssessment?.reasons.length, 0);
+  }
+  console.log('  ✓ 32. Legitimate descriptions and narratives strictly abstain from structural code warnings');
+}
+
+// -------------------------------------------------------------
+// 33. STRUCTURED TEXT: Leave-One-Out Integrity Guard
+// -------------------------------------------------------------
+{
+  const col = createMockColumn('Mã GDV', 'OTHER', 0);
+  const normalPeers = Array.from({ length: 6 }, () => createMockRow([createMockCell('DUNGTT4', 0, 0.99)]));
+  const testCandidate = createMockRow([createMockCell('CORRUPTED * OVERLAP * VALUE', 0, 0.99)]);
+  const rows = [...normalPeers, testCandidate];
+
+  CellQualityEvaluator.evaluateTable([col], rows);
+  assert.strictEqual(testCandidate.cells[0].qualityAssessment?.severity, 'WARNING');
+  console.log('  ✓ 33. Leave-one-out ensures candidate does not corrupt baseline during evaluation');
+}
+
+console.log('\nAll 33 CellQualityEvaluator Unit Tests Passed Successfully!\n');

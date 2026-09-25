@@ -19,27 +19,42 @@ function AppContent() {
   const [currentTab, setCurrentTab] = useState<string>('landing');
   const [selectedDocId, setSelectedDocId] = useState<string | undefined>(undefined);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [resumeDocId, setResumeDocId] = useState<string | undefined>(undefined);
 
-  // Synchronize landing/dashboard on initial load
+  // Synchronize auth state and tab navigation
   React.useEffect(() => {
     if (!isLoading) {
-      if (isAuthenticated && currentTab === 'landing') {
+      if (isAuthenticated && (currentTab === 'landing' || currentTab === 'login' || currentTab === 'register')) {
         setCurrentTab('dashboard');
       } else if (!isAuthenticated && (currentTab === 'dashboard' || currentTab === 'documents' || currentTab === 'account')) {
         setCurrentTab('login');
       }
     }
-  }, [isAuthenticated, isLoading]);
+  }, [isAuthenticated, isLoading, currentTab]);
 
   const handleNavigate = (tab: string, docId?: string) => {
     setSelectedDocId(docId);
-    // Protected route check
-    if (!isAuthenticated && (tab === 'dashboard' || tab === 'documents' || tab === 'account')) {
+    // Protected route check (check both reactive auth state and synchronous token presence)
+    const hasToken = typeof window !== 'undefined' && !!localStorage.getItem('docconvert_token');
+    const isAuthed = isAuthenticated || hasToken;
+    if (!isAuthed && (tab === 'dashboard' || tab === 'documents' || tab === 'account')) {
       setCurrentTab('login');
+    } else if (isAuthed && (tab === 'login' || tab === 'register')) {
+      setCurrentTab('dashboard');
     } else {
       setCurrentTab(tab);
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleOpenUpload = (resumeId?: string) => {
+    setResumeDocId(resumeId);
+    setIsUploadOpen(true);
+  };
+
+  const handleCloseUpload = () => {
+    setIsUploadOpen(false);
+    setResumeDocId(undefined);
   };
 
   const handleUploadSuccess = (docId: string) => {
@@ -57,7 +72,7 @@ function AppContent() {
       <Navbar
         currentTab={currentTab}
         onNavigate={handleNavigate}
-        onOpenUpload={() => setIsUploadOpen(true)}
+        onOpenUpload={() => handleOpenUpload()}
       />
 
       {/* Main Page View */}
@@ -68,12 +83,12 @@ function AppContent() {
         {currentTab === 'dashboard' && (
           <DashboardPage
             onNavigate={handleNavigate}
-            onOpenUpload={() => setIsUploadOpen(true)}
+            onOpenUpload={(resumeId) => handleOpenUpload(resumeId)}
           />
         )}
         {currentTab === 'documents' && (
           <DocumentsPage
-            onOpenUpload={() => setIsUploadOpen(true)}
+            onOpenUpload={(resumeId) => handleOpenUpload(resumeId)}
             selectedDocId={selectedDocId}
           />
         )}
@@ -87,7 +102,8 @@ function AppContent() {
       {/* Upload Modal (Global) */}
       <UploadModal
         isOpen={isUploadOpen}
-        onClose={() => setIsUploadOpen(false)}
+        resumeDocumentId={resumeDocId}
+        onClose={handleCloseUpload}
         onSuccess={handleUploadSuccess}
       />
     </div>

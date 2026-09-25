@@ -1,5 +1,5 @@
 import React from 'react';
-import { Clock, CheckCircle2, AlertTriangle, XCircle, FileText, Loader2 } from 'lucide-react';
+import { Clock, CheckCircle2, AlertTriangle, XCircle, FileText, Loader2, Sparkles } from 'lucide-react';
 
 interface StatusBadgeProps {
   status: string;
@@ -13,6 +13,16 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
   const normalizedStatus = (status || '').toUpperCase();
 
   switch (normalizedStatus) {
+    case 'WAITING_CONFIRMATION':
+      return (
+        <span
+          id={`status-badge-${status}`}
+          className={`inline-flex items-center gap-1.5 font-medium rounded-full bg-purple-50 text-purple-700 border border-purple-200 ${sizeClasses}`}
+        >
+          <Sparkles className={isSm ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
+          Chờ xác nhận
+        </span>
+      );
     case 'READY':
     case 'COMPLETED':
       return (

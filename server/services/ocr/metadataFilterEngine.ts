@@ -35,16 +35,21 @@ export const METADATA_CONFIG = {
 export const SEMANTIC_TYPE_ORDER: Record<SemanticType, number> = {
   ACCOUNT_HOLDER: 1,
   ACCOUNT_NUMBER: 2,
-  CUSTOMER_ID: 3,
-  TAX_CODE: 4,
-  STATEMENT_FROM: 5,
-  STATEMENT_TO: 6,
-  STATEMENT_DATE: 7,
-  CURRENCY: 8,
+  STATEMENT_PERIOD: 3,
+  STATEMENT_FROM: 4,
+  STATEMENT_TO: 5,
+  CURRENCY: 6,
+  CUSTOMER_ID: 7,
+  BRANCH: 8,
   ACCOUNT_TYPE: 9,
-  BRANCH: 10,
+  TAX_CODE: 10,
   ADDRESS: 11,
-  OTHER: 12,
+  OPENING_DATE: 12,
+  OPENING_BALANCE: 13,
+  CLOSING_BALANCE: 14,
+  STATEMENT_DATE: 15,
+  STATEMENT_TIMESTAMP: 16,
+  OTHER: 99,
 };
 
 export class MetadataFilterEngine {
@@ -83,6 +88,159 @@ export class MetadataFilterEngine {
     norm = norm.replace(/['.]+$|\s+$/g, '');
     norm = norm.replace(/\s+/g, ' ');
     return norm.toLowerCase();
+  }
+
+  /**
+   * Semantic Date Normalization:
+   * Parses DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD, YYYY/MM/DD
+   * Returns canonical "YYYY-MM-DD" if confident, or null.
+   */
+  static normalizeDate(val: string): string | null {
+    if (!val) return null;
+    const clean = val.trim();
+    // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+    const dmy = clean.match(/^(\d{1,2})[\/\-. ](\d{1,2})[\/\-. ](\d{4})$/);
+    if (dmy) {
+      const d = dmy[1].padStart(2, '0');
+      const m = dmy[2].padStart(2, '0');
+      const y = dmy[3];
+      return `${y}-${m}-${d}`;
+    }
+    // YYYY-MM-DD or YYYY/MM/DD
+    const ymd = clean.match(/^(\d{4})[\/\-. ](\d{1,2})[\/\-. ](\d{1,2})$/);
+    if (ymd) {
+      const y = ymd[1];
+      const m = ymd[2].padStart(2, '0');
+      const d = ymd[3].padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return null;
+  }
+
+  /**
+   * Semantic Amount Normalization:
+   * Parses European/Vietnamese (497.503,00 or 0,00) and US (497,503.00 or 0.00).
+   * Returns canonical decimal string or null.
+   */
+  static normalizeAmount(val: string): string | null {
+    if (!val) return null;
+    let clean = val.trim().replace(/[^\d.,-]/g, '');
+    if (!clean) return null;
+    // Check European/Vietnamese format: 1.234.567,89 or 0,00
+    if (/\d+\.\d{3},\d{2}$/.test(clean) || /^\d+,\d{2}$/.test(clean)) {
+      clean = clean.replace(/\./g, '').replace(',', '.');
+    } else if (/\d+,\d{3}\.\d{2}$/.test(clean) || /^\d+\.\d{2}$/.test(clean)) {
+      // US format: 1,234,567.89
+      clean = clean.replace(/,/g, '');
+    } else if (/^\d+$/.test(clean)) {
+      clean = `${clean}.00`;
+    }
+    const num = parseFloat(clean);
+    if (isNaN(num)) return null;
+    return num.toFixed(2);
+  }
+
+  /**
+   * Conservative Text Normalization for Comparison:
+   * Normalizes whitespace, linebreaks, punctuation spacing, case.
+   */
+  static normalizeTextForComparison(val: string): string {
+    if (!val) return '';
+    let norm = val.trim().toLowerCase();
+    norm = norm.replace(/,([^\s])/g, ', $1');
+    norm = norm.replace(/;([^\s])/g, '; $1');
+    norm = norm.replace(/:([^\s])/g, ': $1');
+    norm = norm.replace(/\s+/g, ' ');
+    norm = norm.replace(/[.,;:]+$/, '');
+    return norm.trim();
+  }
+
+  /**
+   * Strict Alphanumeric Normalization for Containment/Subsequence Checks:
+   */
+  static normalizeAlphaNumeric(val: string): string {
+    if (!val) return '';
+    return this.removeDiacritics(val)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+  }
+
+  /**
+   * Orientation Normalization Helper:
+   * Maps any raw Azure angle (e.g. -90.22, 0.3, 89.8, 179.9, 269.8)
+   * to nearest canonical quadrant: 0, 90, 180, or 270 degrees.
+   */
+  static normalizeAngle(angle?: number): number {
+    if (typeof angle !== 'number' || isNaN(angle)) return 0;
+    const normalized = ((angle % 360) + 360) % 360;
+    return (Math.round(normalized / 90) % 4) * 90;
+  }
+
+  /**
+   * Generic Visual Coordinate Normalization:
+   * Converts raw Azure polygon coordinates into normalized visual page coordinates
+   * where visualTop=0, visualBottom=1, visualLeft=0, visualRight=1
+   * regardless of whether page orientation is 0°, 90°, 180°, or 270°.
+   */
+  static normalizePolygonToVisualBounds(
+    polygon?: number[],
+    pageWidth: number = 8.5,
+    pageHeight: number = 11.0,
+    pageAngle: number = 0
+  ): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    centerX: number;
+    centerY: number;
+  } | null {
+    if (!polygon || polygon.length < 8) return null;
+    const normAngle = this.normalizeAngle(pageAngle);
+
+    const vxs: number[] = [];
+    const vys: number[] = [];
+
+    const numPoints = Math.floor(polygon.length / 2);
+    for (let i = 0; i < numPoints; i++) {
+      const x = polygon[i * 2];
+      const y = polygon[i * 2 + 1];
+
+      let vx: number;
+      let vy: number;
+
+      if (normAngle === 0) {
+        vx = x / pageWidth;
+        vy = y / pageHeight;
+      } else if (normAngle === 90) {
+        vx = y / pageHeight;
+        vy = (pageWidth - x) / pageWidth;
+      } else if (normAngle === 180) {
+        vx = (pageWidth - x) / pageWidth;
+        vy = (pageHeight - y) / pageHeight;
+      } else {
+        // 270 degrees (or -90 degrees)
+        vx = (pageHeight - y) / pageHeight;
+        vy = x / pageWidth;
+      }
+
+      vxs.push(Math.max(0, Math.min(1, vx)));
+      vys.push(Math.max(0, Math.min(1, vy)));
+    }
+
+    const minX = Math.min(...vxs);
+    const maxX = Math.max(...vxs);
+    const minY = Math.min(...vys);
+    const maxY = Math.max(...vys);
+
+    const left = Number(minX.toFixed(4));
+    const top = Number(minY.toFixed(4));
+    const right = Number(maxX.toFixed(4));
+    const bottom = Number(maxY.toFixed(4));
+    const centerX = Number(((left + right) / 2).toFixed(4));
+    const centerY = Number(((top + bottom) / 2).toFixed(4));
+
+    return { left, top, right, bottom, centerX, centerY };
   }
 
   /**
@@ -193,8 +351,17 @@ export class MetadataFilterEngine {
       /^account\b/.test(clean) ||
       /^so tk\b/.test(clean)
     ) {
-      // Guard: do not misclassify "loai tai khoan" as account number
-      if (!clean.includes('loai') && !clean.includes('type')) {
+      // Guard: do not misclassify "loai tai khoan", "chu tai khoan", "ten tai khoan", "account name", "ngay mo tai khoan", etc. as account number
+      if (
+        !clean.includes('loai') &&
+        !clean.includes('type') &&
+        !clean.includes('chu') &&
+        !clean.includes('ten') &&
+        !clean.includes('name') &&
+        !clean.includes('holder') &&
+        !clean.includes('ngay') &&
+        !clean.includes('date')
+      ) {
         return 'ACCOUNT_NUMBER';
       }
     }
@@ -306,7 +473,27 @@ export class MetadataFilterEngine {
       return 'OTHER';
     }
 
-    // 9. STATEMENT_DATE
+    // 8c. Statement Timestamps (ADDITIONAL)
+    if (
+      clean.includes('statement timestamp') ||
+      clean.includes('thoi gian in') ||
+      clean.includes('thoi diem in') ||
+      clean.includes('thoi gian lap')
+    ) {
+      return 'STATEMENT_TIMESTAMP';
+    }
+
+    // 9. STATEMENT_PERIOD
+    if (
+      clean.includes('ky sao ke') ||
+      clean.includes('statement period') ||
+      clean.includes('ky bao cao') ||
+      clean.includes('billing period')
+    ) {
+      return 'STATEMENT_PERIOD';
+    }
+
+    // 10. STATEMENT_DATE
     if (
       clean.includes('ngay sao ke') ||
       clean.includes('statement date') ||
@@ -321,7 +508,41 @@ export class MetadataFilterEngine {
       return 'STATEMENT_DATE';
     }
 
-    // 10. BRANCH
+    // 11. OPENING_DATE
+    if (
+      clean.includes('ngay mo') ||
+      clean.includes('open date') ||
+      clean.includes('opening date') ||
+      clean.includes('date opened') ||
+      clean.includes('date of open')
+    ) {
+      return 'OPENING_DATE';
+    }
+
+    // 12. OPENING_BALANCE
+    if (
+      clean.includes('so du dau ky') ||
+      clean.includes('so du ban dau') ||
+      clean.includes('opening balance') ||
+      clean.includes('opening bal') ||
+      clean.includes('so du dau') ||
+      clean.includes('dau ky')
+    ) {
+      return 'OPENING_BALANCE';
+    }
+
+    // 13. CLOSING_BALANCE
+    if (
+      clean.includes('so du cuoi ky') ||
+      clean.includes('closing balance') ||
+      clean.includes('closing bal') ||
+      clean.includes('so du cuoi') ||
+      clean.includes('cuoi ky')
+    ) {
+      return 'CLOSING_BALANCE';
+    }
+
+    // 14. BRANCH
     if (
       clean.includes('chi nhanh') ||
       clean.includes('don vi') ||
@@ -333,7 +554,7 @@ export class MetadataFilterEngine {
       return 'BRANCH';
     }
 
-    // 11. ADDRESS
+    // 15. ADDRESS
     if (clean.includes('dia chi') || clean.includes('address')) {
       return 'ADDRESS';
     }
@@ -344,46 +565,38 @@ export class MetadataFilterEngine {
   /**
    * Multi-Signal Header Table Classifier
    * headerTableScore = positionEvidence + semanticEvidence + repetitionEvidence + structuralEvidence - transactionEvidence
+   * Orientation-aware visual position and semantic keyword density over arbitrary row count.
    */
   static isHeaderTable(
     table: OCRExtractedTable,
     pageHeight: number = 11.69,
-    allTables: OCRExtractedTable[] = []
+    allTables: OCRExtractedTable[] = [],
+    page?: OCRPage
   ): boolean {
-    const br = table.boundingRegions?.[0];
+    const br = table.boundingRegions?.[0] || (table as any).bounding_regions?.[0];
     if (!br || !Array.isArray(br.polygon) || br.polygon.length < 8) return false;
 
-    const ys = [br.polygon[1], br.polygon[3], br.polygon[5], br.polygon[7]];
-    const minY = Math.min(...ys);
-    const normTop = minY / pageHeight;
+    const pw = page?.width || 8.5;
+    const ph = page?.height || pageHeight;
+    const pAngle = page?.angle || 0;
+
+    const visualBounds = this.normalizePolygonToVisualBounds(br.polygon, pw, ph, pAngle);
+    const visualTop = visualBounds ? visualBounds.top : 0.5;
 
     let score = 0;
 
-    // 1. Position evidence
-    if (normTop <= 0.15) {
-      score += 1.8;
-    } else if (normTop <= METADATA_CONFIG.TABLE_HEADER_MAX_NORM_TOP) {
-      score += 1.0;
+    // 1. Position evidence (Orientation-aware visual coordinate)
+    if (visualTop <= 0.20) {
+      score += 2.0;
+    } else if (visualTop <= 0.35) {
+      score += 1.2;
+    } else if (visualTop <= 0.50) {
+      score += 0.5;
     } else {
       score -= 2.5; // Below header zone
     }
 
-    // 2. Structural evidence
-    if (table.rowCount <= 3) {
-      score += 1.2;
-    } else if (table.rowCount <= 5) {
-      score += 0.5;
-    } else {
-      score -= 2.0; // Large row count strongly implies transaction table
-    }
-
-    if (table.columnCount <= 4) {
-      score += 0.8;
-    } else if (table.columnCount >= 7) {
-      score -= 1.5; // Many columns strongly implies transaction ledger
-    }
-
-    // 3. Semantic and transaction evidence inside table cells
+    // 2. Semantic and transaction evidence inside table cells
     let headerKeywordCount = 0;
     let transactionKeywordCount = 0;
     let amountCellCount = 0;
@@ -403,25 +616,42 @@ export class MetadataFilterEngine {
       'to',
       'tu ngay',
       'den ngay',
+      'cif',
+      'dia chi',
+      'address',
+      'so du ban dau',
+      'so du cuoi ky',
+      'opening balance',
+      'closing balance',
+      'ngay mo',
+      'open date',
+      'loai tien',
+      'so tk',
+      'chu tk',
+      'chu tai khoan',
+      'ten tai khoan',
+      'account name',
+      'account no',
     ];
 
     const transactionKeywords = [
-      'so du',
-      'balance',
-      'debit',
-      'credit',
       'ps no',
       'ps co',
-      'stt',
-      'doc no',
-      'ref no',
-      'trans type',
-      'dien giai',
-      'description',
+      'debit',
+      'credit',
       'rut tien',
       'chuyen khoan',
       'so chung tu',
+      'dien giai',
+      'trans type',
+      'so du sau moi gd',
       'ngay hieu luc',
+      'effective date',
+      'transaction date',
+      'so gd',
+      'ma gd',
+      'so du',
+      'balance',
     ];
 
     for (const row of table.rows || []) {
@@ -435,21 +665,61 @@ export class MetadataFilterEngine {
         }
         for (const tk of transactionKeywords) {
           if (text.includes(tk)) {
+            // Opening and closing balances are header fields, not transaction rows
+            if (
+              (tk === 'so du' || tk === 'balance') &&
+              (text.includes('dau') ||
+                text.includes('cuoi') ||
+                text.includes('opening') ||
+                text.includes('closing') ||
+                text.includes('ban dau'))
+            ) {
+              continue;
+            }
             transactionKeywordCount++;
             break;
           }
         }
         // Check if cell is formatted currency amount (e.g. 125,450,000)
-        if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(cell.rawValue.trim()) || /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(cell.rawValue.trim())) {
+        if (
+          /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(cell.rawValue.trim()) ||
+          /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(cell.rawValue.trim())
+        ) {
           amountCellCount++;
         }
       }
     }
 
-    score += Math.min(headerKeywordCount * 0.5, 2.0);
-    score -= Math.min(transactionKeywordCount * 1.0, 3.0);
-    if (amountCellCount > 3) {
-      score -= 2.0;
+    // Content Semantic Density:
+    // If table has high header keyword count and low transaction keyword count,
+    // it is overwhelmingly a statement header table regardless of row count!
+    const isRichHeaderContent =
+      headerKeywordCount >= 3 &&
+      (transactionKeywordCount <= 2 || headerKeywordCount >= transactionKeywordCount * 2);
+
+    if (isRichHeaderContent) {
+      score += 3.5;
+    } else {
+      score += Math.min(headerKeywordCount * 0.5, 2.0);
+      score -= Math.min(transactionKeywordCount * 1.0, 3.0);
+      if (amountCellCount > 5) {
+        score -= 2.0;
+      }
+    }
+
+    // 3. Structural evidence
+    if (table.rowCount <= 3) {
+      score += 1.2;
+    } else if (table.rowCount <= 5) {
+      score += 0.5;
+    } else if (!isRichHeaderContent) {
+      score -= 2.0; // Large row count without header keywords strongly implies transaction table
+    }
+
+    if (table.columnCount <= 4) {
+      score += 0.8;
+    } else if (table.columnCount >= 7) {
+      score -= 2.0; // Many columns strongly implies transaction ledger
     }
 
     // 4. Repetition evidence: check if another page has a table at nearly identical position
@@ -459,8 +729,8 @@ export class MetadataFilterEngine {
         other.rowCount === table.rowCount &&
         other.columnCount === table.columnCount
     );
-    if (duplicatePageTable) {
-      score += 0.8;
+    if (duplicatePageTable && isRichHeaderContent) {
+      score += 0.5;
     }
 
     return score >= METADATA_CONFIG.TABLE_HEADER_MIN_SCORE;
@@ -473,7 +743,8 @@ export class MetadataFilterEngine {
   static isTransactionTableOverlap(
     obs: OCRMetadataObservation,
     tables: OCRExtractedTable[],
-    pageHeight: number = 11.69
+    pageHeight: number = 11.69,
+    pages: OCRPage[] = []
   ): boolean {
     if (!tables || tables.length === 0) return false;
 
@@ -482,9 +753,11 @@ export class MetadataFilterEngine {
     if (!keyBox && !valBox) return false;
 
     const pageTables = tables.filter((t) => t.pageNumber === obs.sourcePage);
+    const pageObj = pages.find((p) => p.pageNumber === obs.sourcePage);
+
     for (const table of pageTables) {
       // If table is classified as a header metadata table, it does NOT act as an exclusion zone
-      if (this.isHeaderTable(table, pageHeight, tables)) {
+      if (this.isHeaderTable(table, pageHeight, tables, pageObj)) {
         continue;
       }
 
@@ -499,6 +772,77 @@ export class MetadataFilterEngine {
           }
         }
       }
+    }
+
+    return false;
+  }
+
+  /**
+   * Low-Value Metadata Suppression Guard:
+   * Suppresses generic page counters, sign-off roles, and footer control artifacts.
+   * Strictly preserves business metadata (negative controls: Account Number, Reference Number, Customer Number, Branch, etc.).
+   */
+  static isSuppressedLowValueMetadata(
+    rawLabel: string,
+    rawValue: string,
+    semanticType?: SemanticType
+  ): boolean {
+    // 1. Negative controls: never suppress recognized core/business metadata
+    if (
+      semanticType &&
+      semanticType !== 'OTHER' &&
+      semanticType !== 'STATEMENT_TIMESTAMP'
+    ) {
+      return false;
+    }
+
+    const cleanL = this.removeDiacritics(this.normalizeLabel(rawLabel));
+    const cleanV = this.removeDiacritics(this.normalizeValueForMatch(rawValue));
+
+    // Negative controls check on raw label strings
+    if (
+      cleanL.includes('account number') ||
+      cleanL.includes('so tai khoan') ||
+      cleanL.includes('reference number') ||
+      cleanL.includes('so tham chieu') ||
+      cleanL.includes('customer number') ||
+      cleanL.includes('ma khach hang') ||
+      cleanL.includes('cif') ||
+      cleanL.includes('branch') ||
+      cleanL.includes('chi nhanh') ||
+      cleanL.includes('account holder') ||
+      cleanL.includes('chu tai khoan')
+    ) {
+      return false;
+    }
+
+    // 2. PAGE_COUNTER patterns (e.g. "Page", "Trang số", "Page 1 of 4", "1 of 4")
+    if (
+      /^(trang(\s*so)?|page(\s*(no|number))?)$/.test(cleanL) ||
+      /^(trang\s+\d+(\s*[/]\s*\d+)?|page\s+\d+(\s*(of|[/])\s*\d+)?)$/.test(cleanL)
+    ) {
+      return true;
+    }
+    if (/^\d+\s*(of|[/])\s*\d+$/.test(cleanV)) {
+      return true;
+    }
+
+    // 3. SIGNOFF_ROLE / Workflow roles (e.g. "Prepared by", "Supervisor", "Người lập", "Kiểm soát", "GDV")
+    if (
+      /^(nguoi lap|nguoi lap bieu|lap bang|prepared by|maker)\b/.test(cleanL) ||
+      /^(kiem soat|supervisor|checker|approver|nguoi phe duyet)\b/.test(cleanL) ||
+      /^(gdv|giao dich vien|teller|nv giao dich|nhan vien giao dich)\b/.test(cleanL) ||
+      /^(thu quy|cashier)\b/.test(cleanL)
+    ) {
+      return true;
+    }
+
+    // 4. Footers / Control artifacts
+    if (
+      /^(chu ky|signature|ky va dong dau|ky ten)\b/.test(cleanL) ||
+      /^(ma bao mat|security code|barcode|ma vach)\b/.test(cleanL)
+    ) {
+      return true;
     }
 
     return false;
@@ -542,6 +886,20 @@ export class MetadataFilterEngine {
       if (typeA !== typeB && typeA !== 'OTHER' && typeB !== 'OTHER') {
         return true;
       }
+    }
+
+    // Parenthesized sub-header text mistaken as value: e.g. "(Opening Date)", "(Maturity Date)", "(Address)"
+    if (/^\s*\([a-zA-Z\s]{3,}\)\s*$/.test(rawV)) {
+      return true;
+    }
+
+    // Date semantic type must contain at least one digit
+    const sem = obs.semanticType || this.resolveSemanticType(rawK, rawV);
+    if (
+      (sem === 'OPENING_DATE' || sem === 'STATEMENT_DATE' || sem === 'STATEMENT_FROM' || sem === 'STATEMENT_TO') &&
+      !/\d/.test(rawV)
+    ) {
+      return true;
     }
 
     return false;
@@ -624,6 +982,12 @@ export class MetadataFilterEngine {
    * Source B: Header-Zone Lines Candidate Extraction
    * Scans upper page lines for key-value structures, compound date ranges, currency, and account types.
    */
+  /**
+   * Source B: Header-Zone Lines Candidate Extraction
+   * Scans upper page lines for key-value structures, compound date ranges, currency, and account types.
+   * Uses orientation-aware visual coordinate normalization.
+   * Protects timestamps from improper colon splitting.
+   */
   static extractHeaderLineCandidates(
     pages: OCRPage[],
     allTables: OCRExtractedTable[] = []
@@ -632,6 +996,8 @@ export class MetadataFilterEngine {
 
     for (const page of pages) {
       const pageHeight = page.height || 11.69;
+      const pageWidth = page.width || 8.5;
+      const pageAngle = page.angle || 0;
       const lines = page.lines || [];
 
       for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
@@ -639,19 +1005,34 @@ export class MetadataFilterEngine {
         const poly = line.polygon;
         if (!poly || poly.length < 8) continue;
 
-        const ys = [poly[1], poly[3], poly[5], poly[7]];
-        const minY = Math.min(...ys);
-        const maxY = Math.max(...ys);
-        const normTop = minY / pageHeight;
-        const normBottom = maxY / pageHeight;
+        const visualBounds = this.normalizePolygonToVisualBounds(poly, pageWidth, pageHeight, pageAngle);
+        const normTop = visualBounds ? visualBounds.top : 0.5;
+        const normBottom = visualBounds ? visualBounds.bottom : 0.5;
 
-        // Header zone constraint
-        if (normBottom > METADATA_CONFIG.HEADER_MAX_ZONE_RATIO) {
+        // Header zone constraint (orientation-aware)
+        if (normBottom > 0.40 && normTop > 0.30) {
           continue;
         }
 
         const content = line.content.trim();
         if (!content) continue;
+
+        // Sub-case 0: Standalone timestamp in header zone (e.g. "01/11/2024 10:17:06" or "10:17:06")
+        if (/^(\d{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4}\s+)?\d{1,2}:\d{2}(:\d{2})?$/.test(content)) {
+          candidates.push({
+            rawLabel: 'Statement Timestamp',
+            rawValue: content,
+            confidence: 0.95,
+            sourcePage: page.pageNumber,
+            keyBoundingPolygon: poly,
+            valueBoundingPolygon: poly,
+            sourceType: 'HEADER_LINE',
+            normalizedTop: Number(normTop.toFixed(4)),
+            normalizedBottom: Number(normBottom.toFixed(4)),
+            semanticType: 'STATEMENT_TIMESTAMP',
+          });
+          continue;
+        }
 
         // Sub-case 1: Compound bilingual date range (e.g. "Từ ngày(from): 01/05/2024 đến ngày(to): 31/10/2024")
         const compoundDateMatch = content.match(/T[ừu]\s*ng[àa]y[^:]*:\s*([0-9]{2}[-/.][0-9]{2}[-/.][0-9]{4})\s*(?:đ|d)[ếe]n\s*ng[àa]y[^:]*:\s*([0-9]{2}[-/.][0-9]{2}[-/.][0-9]{4})/i);
@@ -689,7 +1070,11 @@ export class MetadataFilterEngine {
           const lbl = content.substring(0, colonIdx).trim();
           const val = content.substring(colonIdx + 1).trim();
 
-          if (lbl.length > 2 && val.length > 0) {
+          // Guard against splitting timestamps like "01/11/2024 10:17:06" at ":"
+          const hasLetters = /[a-zA-Z\p{L}]/u.test(lbl);
+          const isDateFragment = /^\d{1,2}[-/.][0-9]{1,2}[-/.][0-9]{2,4}\s+\d+$/.test(lbl);
+
+          if (hasLetters && !isDateFragment && lbl.length > 2 && val.length > 0) {
             const sem = this.resolveSemanticType(lbl, val);
             candidates.push({
               rawLabel: lbl,
@@ -749,29 +1134,100 @@ export class MetadataFilterEngine {
   /**
    * Source C: Header Tables Candidate Extraction
    * Safely extracts key-value observations from tables classified as Header Tables.
-   * Enforces zero-guessing: does not map multiple numeric client codes to fabricated CIF/MST.
+   * Supports 2-column, 4-column multi-pair grid header tables, and grouped client identifier tables.
    */
   static extractHeaderTableCandidates(
     tables: OCRExtractedTable[],
-    pageHeight: number = 11.69
+    pageHeight: number = 11.69,
+    pages: OCRPage[] = []
   ): OCRMetadataObservation[] {
     const candidates: OCRMetadataObservation[] = [];
 
     for (const table of tables) {
-      if (!this.isHeaderTable(table, pageHeight, tables)) {
+      const tablePage = pages.find((p) => p.pageNumber === table.pageNumber);
+      if (!this.isHeaderTable(table, pageHeight, tables, tablePage)) {
         continue;
       }
 
       const br = table.boundingRegions?.[0];
-      const ys = br?.polygon ? [br.polygon[1], br.polygon[3], br.polygon[5], br.polygon[7]] : [];
-      const normTop = ys.length ? Math.min(...ys) / pageHeight : 0.10;
-      const normBottom = ys.length ? Math.max(...ys) / pageHeight : 0.20;
+      const pw = tablePage?.width || 8.5;
+      const ph = tablePage?.height || pageHeight;
+      const pAngle = tablePage?.angle || 0;
+      const visualBounds = this.normalizePolygonToVisualBounds(br?.polygon, pw, ph, pAngle);
+      const normTop = visualBounds ? visualBounds.top : 0.10;
+      const normBottom = visualBounds ? visualBounds.bottom : 0.20;
 
       for (const row of table.rows || []) {
         const cells = row.cells || [];
         if (cells.length < 2) continue;
 
-        // Strategy: First cell often contains label, subsequent cells contain values
+        // Skip bilingual sub-header rows where all non-empty cells are parenthesized labels (e.g. "(Opening Date)", "(Maturity Date)")
+        const nonEmptyCells = cells.filter((c) => c.rawValue && c.rawValue.trim().length > 0);
+        if (nonEmptyCells.length === 0) continue;
+        const allParenthesizedLabels = nonEmptyCells.every((c) => /^\s*\([^\)]+\)\s*$/.test(c.rawValue.trim()));
+        if (allParenthesizedLabels) {
+          continue;
+        }
+
+        // Check for 4-column grid header pair (e.g. Bản Việt Table 0: [Label1, Val1, Label2, Val2])
+        if (cells.length === 4) {
+          const col0Text = cells[0].rawValue.trim();
+          const col1Text = cells[1].rawValue.trim();
+          const col2Text = cells[2].rawValue.trim();
+          const col3Text = cells[3].rawValue.trim();
+
+          const isCol2Label =
+            col2Text.includes(':') ||
+            (this.resolveSemanticType(col2Text) !== 'OTHER' && !/^\s*\(/.test(col2Text));
+
+          if (isCol2Label) {
+            const pairs = [
+              { labelCell: cells[0], valCell: cells[1] },
+              { labelCell: cells[2], valCell: cells[3] },
+            ];
+            for (const pair of pairs) {
+              const rawLabel = pair.labelCell.rawValue.trim();
+              const rawVal = pair.valCell.rawValue.trim();
+              if (!rawLabel || !rawVal) continue;
+              const sem = this.resolveSemanticType(rawLabel, rawVal);
+              candidates.push({
+                rawLabel,
+                rawValue: rawVal,
+                confidence: pair.valCell.confidence || pair.labelCell.confidence || 0.95,
+                sourcePage: table.pageNumber,
+                keyBoundingPolygon: pair.labelCell.boundingPolygon,
+                valueBoundingPolygon: pair.valCell.boundingPolygon,
+                sourceType: 'HEADER_TABLE',
+                normalizedTop: Number(normTop.toFixed(4)),
+                normalizedBottom: Number(normBottom.toFixed(4)),
+                semanticType: sem,
+              });
+            }
+            continue;
+          } else {
+            // col0 is a label, and columns 1, 2, 3 represent a multi-column value (e.g. full address or notes)
+            const rawLabel = col0Text;
+            const combinedVal = [col1Text, col2Text, col3Text].filter(Boolean).join(' ').trim();
+            if (rawLabel && combinedVal) {
+              const sem = this.resolveSemanticType(rawLabel, combinedVal);
+              candidates.push({
+                rawLabel,
+                rawValue: combinedVal,
+                confidence: cells[1].confidence || cells[0].confidence || 0.95,
+                sourcePage: table.pageNumber,
+                keyBoundingPolygon: cells[0].boundingPolygon,
+                valueBoundingPolygon: cells[cells.length - 1].boundingPolygon || cells[1].boundingPolygon,
+                sourceType: 'HEADER_TABLE',
+                normalizedTop: Number(normTop.toFixed(4)),
+                normalizedBottom: Number(normBottom.toFixed(4)),
+                semanticType: sem,
+              });
+              continue;
+            }
+          }
+        }
+
+        // Standard 2-column or multi-value cell processing (HDBank etc.)
         const labelCell = cells[0];
         const rawLabel = labelCell.rawValue.trim();
         const sem = this.resolveSemanticType(rawLabel);
@@ -780,7 +1236,6 @@ export class MetadataFilterEngine {
         if (valueCells.length === 0) continue;
 
         if (sem === 'ACCOUNT_HOLDER') {
-          // In real HDBank: "KHÁCH HÀNG: CLIENT" | "02917178" | "242119000" | "NGUYEN THI TUYET LAN"
           // Safe rule: Find string with alphabetic name (ACCOUNT_HOLDER)
           const nameCell = valueCells.find((c) => /^[A-Z\s]{4,}$/.test(c.rawValue.trim()));
           if (nameCell) {
@@ -816,7 +1271,6 @@ export class MetadataFilterEngine {
             });
           }
         } else if (sem === 'ACCOUNT_NUMBER') {
-          // Look for account number digit sequence (e.g. "051704070011450")
           const accCell = valueCells.find((c) => /^\d{8,20}$/.test(c.rawValue.trim()));
           if (accCell) {
             candidates.push({
@@ -833,7 +1287,7 @@ export class MetadataFilterEngine {
             });
           }
 
-          // Check if currency or account type is embedded in remaining cells (e.g. "VND TGTT TRONG NUOC CN/365")
+          // Check if currency or account type is embedded in remaining cells
           for (const extraCell of valueCells) {
             if (extraCell === accCell) continue;
             const extraText = extraCell.rawValue.trim();
@@ -893,6 +1347,83 @@ export class MetadataFilterEngine {
   }
 
   /**
+   * First Meaningful Statement Page Discovery:
+   * Evaluates pages in ascending order to find the first page with strong statement-header evidence.
+   * Isolates metadata candidate collection to this single primary page,
+   * completely suppressing cross-page footer/page/signature noise.
+   */
+  static discoverPrimaryMetadataPage(
+    pages: OCRPage[],
+    tables: OCRExtractedTable[] = [],
+    rawObservations: OCRMetadataObservation[] = []
+  ): number {
+    if (!pages || pages.length <= 1) return 1;
+
+    const pageScores: Array<{ pageNumber: number; score: number }> = [];
+
+    for (const page of pages) {
+      const pNum = page.pageNumber;
+      let score = 0;
+
+      // 1. Evidence from rawObservations on this page
+      const pageObs = rawObservations.filter((o) => o.sourcePage === pNum);
+      for (const obs of pageObs) {
+        const sem = obs.semanticType || this.resolveSemanticType(obs.rawLabel, obs.rawValue);
+        if (sem === 'ACCOUNT_NUMBER' || sem === 'ACCOUNT_HOLDER') {
+          score += 3.0;
+        } else if (sem === 'CUSTOMER_ID' || sem === 'TAX_CODE') {
+          score += 2.0;
+        } else if (sem === 'STATEMENT_FROM' || sem === 'STATEMENT_TO' || sem === 'STATEMENT_PERIOD') {
+          score += 2.0;
+        } else if (sem === 'CURRENCY' || sem === 'ACCOUNT_TYPE') {
+          score += 1.5;
+        } else if (sem === 'BRANCH' || sem === 'ADDRESS' || sem === 'OPENING_DATE') {
+          score += 1.0;
+        } else if (sem !== 'OTHER') {
+          score += 0.8;
+        } else {
+          if (this.isSuppressedLowValueMetadata(obs.rawLabel, obs.rawValue, sem)) {
+            score -= 1.0;
+          } else {
+            score += 0.2;
+          }
+        }
+      }
+
+      // 2. Evidence from tables on this page
+      const pageTables = tables.filter((t) => t.pageNumber === pNum);
+      for (const table of pageTables) {
+        if (this.isHeaderTable(table, page.height || 11.69, tables, page)) {
+          score += 4.0;
+        }
+      }
+
+      // 3. Evidence from lines on this page
+      const lines = page.lines || [];
+      for (const line of lines) {
+        const text = line.content || '';
+        if (/T[ừu]\s*ng[àa]y/i.test(text) && /(?:đ|d)[ếe]n\s*ng[àa]y/i.test(text)) {
+          score += 2.5;
+        }
+        const cleanT = this.removeDiacritics(text).toLowerCase();
+        if (cleanT.includes('so tai khoan') || cleanT.includes('account no') || cleanT.includes('chu tai khoan')) {
+          score += 1.5;
+        }
+      }
+
+      pageScores.push({ pageNumber: pNum, score });
+
+      if (score >= 4.0) {
+        return pNum;
+      }
+    }
+
+    // Fallback: earliest page with the highest score, or page 1
+    pageScores.sort((a, b) => b.score - a.score);
+    return pageScores[0]?.score > 0 ? pageScores[0].pageNumber : 1;
+  }
+
+  /**
    * Clean label presentation string (strips trailing punctuation)
    */
   static cleanDisplayLabel(rawLabel: string): string {
@@ -903,7 +1434,8 @@ export class MetadataFilterEngine {
   /**
    * Main Multi-Source Processing Method
    * Fuses Source A (keyValuePairs), Source B (header lines), Source C (header tables),
-   * applies structural filters, deduplication, conflict detection, quality scoring, and classification.
+   * isolates to primary header page, applies structural filters, deduplication, conflict detection,
+   * quality scoring, and classification.
    */
   static processObservations(
     rawObservations: OCRMetadataObservation[] = [],
@@ -922,37 +1454,55 @@ export class MetadataFilterEngine {
 
     const pageHeight = pages[0]?.height || 11.69;
 
-    // 1. Gather all candidate observations from 3 sources
+    // 0. Primary Metadata Page Discovery & Page Isolation
+    let isolatedObservations = rawObservations;
+    let isolatedPages = pages;
+    let isolatedTables = tables;
+
+    if (pages.length > 1) {
+      const primaryPage = this.discoverPrimaryMetadataPage(pages, tables, rawObservations);
+      isolatedObservations = rawObservations.filter((o) => o.sourcePage === primaryPage);
+      isolatedPages = pages.filter((p) => p.pageNumber === primaryPage);
+      isolatedTables = tables.filter((t) => t.pageNumber === primaryPage);
+    }
+
+    // 1. Gather all candidate observations from 3 sources on primary page
     const allRawCandidates: OCRMetadataObservation[] = [];
 
     // Source A: keyValuePairs
-    for (const obs of rawObservations) {
+    for (const obs of isolatedObservations) {
       const clone = { ...obs, sourceType: obs.sourceType || ('KEY_VALUE' as MetadataSourceType) };
       if (!clone.normalizedTop && clone.keyBoundingPolygon) {
-        const box = this.polygonToBoundingBox(clone.keyBoundingPolygon);
-        if (box) {
-          clone.normalizedTop = Number((box.minY / pageHeight).toFixed(4));
-          clone.normalizedBottom = Number((box.maxY / pageHeight).toFixed(4));
+        const obsPage = pages.find((p) => p.pageNumber === clone.sourcePage);
+        const visualBounds = this.normalizePolygonToVisualBounds(
+          clone.keyBoundingPolygon,
+          obsPage?.width || 8.5,
+          obsPage?.height || pageHeight,
+          obsPage?.angle || 0
+        );
+        if (visualBounds) {
+          clone.normalizedTop = visualBounds.top;
+          clone.normalizedBottom = visualBounds.bottom;
         }
       }
       allRawCandidates.push(clone);
     }
 
     // Source B: Header-zone Lines
-    if (pages.length > 0) {
-      const lineCandidates = this.extractHeaderLineCandidates(pages, tables);
+    if (isolatedPages.length > 0) {
+      const lineCandidates = this.extractHeaderLineCandidates(isolatedPages, tables);
       headerLineCandidateCount = lineCandidates.length;
       allRawCandidates.push(...lineCandidates);
     }
 
     // Source C: Header Tables
-    if (tables.length > 0) {
-      const tableCandidates = this.extractHeaderTableCandidates(tables, pageHeight);
+    if (isolatedTables.length > 0) {
+      const tableCandidates = this.extractHeaderTableCandidates(isolatedTables, pageHeight, pages);
       headerTableCandidateCount = tableCandidates.length;
       allRawCandidates.push(...tableCandidates);
     }
 
-    // 2. Structural Quality Filters
+    // 2. Structural Quality & Noise Filters
     const validCandidates: OCRMetadataObservation[] = [];
 
     for (const obs of allRawCandidates) {
@@ -977,6 +1527,12 @@ export class MetadataFilterEngine {
       obs.normalizedValueForMatch = normVal;
       obs.semanticType = obs.semanticType || this.resolveSemanticType(rawK, rawV);
 
+      // Low-value suppression (page counters, sign-off roles, footers)
+      if (this.isSuppressedLowValueMetadata(rawK, rawV, obs.semanticType)) {
+        rejectedCount++;
+        continue;
+      }
+
       // Malformed / compound check
       if (this.isMalformedObservation(obs)) {
         filteredMalformedCount++;
@@ -992,7 +1548,7 @@ export class MetadataFilterEngine {
       }
 
       // Transaction table overlap check (header tables are NOT treated as overlap)
-      if (this.isTransactionTableOverlap(obs, tables, pageHeight)) {
+      if (this.isTransactionTableOverlap(obs, tables, pageHeight, pages)) {
         filteredTableOverlapCount++;
         rejectedCount++;
         continue;
@@ -1004,9 +1560,6 @@ export class MetadataFilterEngine {
     const candidateCount = validCandidates.length;
 
     // 3. Cluster Candidates for Deduplication & Conflict Resolution
-    // Grouping criteria:
-    // If semanticType is recognized (not OTHER): group by semanticType!
-    // If semanticType is OTHER: group by normalizedLabel!
     const clusters: Array<{
       clusterKey: string;
       semanticType: SemanticType;
@@ -1019,7 +1572,6 @@ export class MetadataFilterEngine {
       if (obs.semanticType && obs.semanticType !== 'OTHER') {
         matchedCluster = clusters.find((c) => c.semanticType === obs.semanticType);
       } else {
-        // Match by high label similarity (>= 0.75) for OTHER
         matchedCluster = clusters.find(
           (c) =>
             c.semanticType === 'OTHER' &&
@@ -1047,29 +1599,122 @@ export class MetadataFilterEngine {
     // 4. Resolve each cluster
     for (const cluster of clusters) {
       const obsGroup = cluster.items;
+      const sem = cluster.semanticType;
 
-      // Sub-group by normalizedValueForMatch
-      const valGroups = new Map<string, OCRMetadataObservation[]>();
-      for (const obs of obsGroup) {
-        const vk = obs.normalizedValueForMatch!;
-        const arr = valGroups.get(vk) || [];
-        arr.push(obs);
-        valGroups.set(vk, arr);
+      // Structure to group semantically equivalent observations
+      interface ValueGroup {
+        canonicalKey: string;
+        primaryObs: OCRMetadataObservation;
+        observations: OCRMetadataObservation[];
+        totalConfidence: number;
       }
 
-      const distinctValCount = valGroups.size;
+      const valGroups: ValueGroup[] = [];
+
+      for (const obs of obsGroup) {
+        const rawV = obs.rawValue.trim();
+        let matchedGroup: ValueGroup | undefined;
+
+        // Equivalence matching based on semantic type
+        if (sem === 'OPENING_DATE' || sem === 'STATEMENT_DATE' || sem === 'STATEMENT_FROM' || sem === 'STATEMENT_TO') {
+          const d = this.normalizeDate(rawV);
+          if (d) {
+            matchedGroup = valGroups.find((g) => g.canonicalKey === `DATE:${d}`);
+          }
+        } else if (sem === 'OPENING_BALANCE' || sem === 'CLOSING_BALANCE') {
+          const a = this.normalizeAmount(rawV);
+          if (a) {
+            matchedGroup = valGroups.find((g) => g.canonicalKey === `AMT:${a}`);
+          }
+        } else if (sem === 'ADDRESS' || sem === 'BRANCH' || sem === 'ACCOUNT_HOLDER') {
+          const t = this.normalizeTextForComparison(rawV);
+          matchedGroup = valGroups.find((g) => g.canonicalKey === `TXT:${t}`);
+        } else {
+          // Identifiers & OTHER: conservative match
+          const k = obs.normalizedValueForMatch!;
+          matchedGroup = valGroups.find((g) => g.canonicalKey === `RAW:${k}`);
+        }
+
+        if (matchedGroup) {
+          matchedGroup.observations.push(obs);
+          matchedGroup.totalConfidence += obs.confidence;
+          if (obs.confidence > matchedGroup.primaryObs.confidence) {
+            matchedGroup.primaryObs = obs;
+          }
+        } else {
+          let cKey: string;
+          if (sem === 'OPENING_DATE' || sem === 'STATEMENT_DATE' || sem === 'STATEMENT_FROM' || sem === 'STATEMENT_TO') {
+            const d = this.normalizeDate(rawV);
+            cKey = d ? `DATE:${d}` : `RAW:${obs.normalizedValueForMatch}`;
+          } else if (sem === 'OPENING_BALANCE' || sem === 'CLOSING_BALANCE') {
+            const a = this.normalizeAmount(rawV);
+            cKey = a ? `AMT:${a}` : `RAW:${obs.normalizedValueForMatch}`;
+          } else if (sem === 'ADDRESS' || sem === 'BRANCH' || sem === 'ACCOUNT_HOLDER') {
+            cKey = `TXT:${this.normalizeTextForComparison(rawV)}`;
+          } else {
+            cKey = `RAW:${obs.normalizedValueForMatch}`;
+          }
+
+          valGroups.push({
+            canonicalKey: cKey,
+            primaryObs: obs,
+            observations: [obs],
+            totalConfidence: obs.confidence,
+          });
+        }
+      }
+
+      // Subsequence / Containment check (especially for ADDRESS and text fields)
+      // If one group is a clear prefix or substring of another group, prefer the more complete group!
+      if (valGroups.length > 1 && (sem === 'ADDRESS' || sem === 'ACCOUNT_HOLDER' || sem === 'BRANCH' || sem === 'OTHER')) {
+        // Sort groups by string length descending (longest first)
+        valGroups.sort((a, b) => b.primaryObs.rawValue.length - a.primaryObs.rawValue.length);
+
+        const mergedIndices = new Set<number>();
+        for (let i = 0; i < valGroups.length; i++) {
+          if (mergedIndices.has(i)) continue;
+          const longerNorm = this.normalizeAlphaNumeric(valGroups[i].primaryObs.rawValue);
+          if (!longerNorm || longerNorm.length < 5) continue;
+
+          for (let j = i + 1; j < valGroups.length; j++) {
+            if (mergedIndices.has(j)) continue;
+            const shorterNorm = this.normalizeAlphaNumeric(valGroups[j].primaryObs.rawValue);
+            if (!shorterNorm || shorterNorm.length < 3) continue;
+
+            // Check if longerNorm starts with or contains shorterNorm
+            if (longerNorm.startsWith(shorterNorm) || longerNorm.includes(shorterNorm)) {
+              // Group j is a partial / truncated version of Group i!
+              valGroups[i].observations.push(...valGroups[j].observations);
+              valGroups[i].totalConfidence += valGroups[j].totalConfidence;
+              mergedIndices.add(j);
+              nearDuplicateMergeCount += valGroups[j].observations.length;
+            }
+          }
+        }
+
+        if (mergedIndices.size > 0) {
+          const remainingGroups = valGroups.filter((_, idx) => !mergedIndices.has(idx));
+          valGroups.length = 0;
+          valGroups.push(...remainingGroups);
+        }
+      }
+
+      // Check distinct semantic groups count
+      const distinctValCount = valGroups.length;
 
       if (distinctValCount === 1) {
-        // --- ALL OBSERVATIONS AGREE ON VALUE -> AUTO CANONICAL ITEM ---
+        // --- ALL OBSERVATIONS AGREE ON VALUE OR WERE MERGED AS COMPLETE SUPERSET -> AUTO CANONICAL ITEM ---
         if (obsGroup.length > 1) {
           nearDuplicateMergeCount += obsGroup.length - 1;
         }
 
-        // Sort by confidence descending, then earliest source page
-        obsGroup.sort((a, b) => b.confidence - a.confidence || a.sourcePage - b.sourcePage);
-        const best = obsGroup[0];
+        const winnerGroup = valGroups[0];
+        // Sort winner group observations: prefer longer (more complete), then confidence, then source page
+        winnerGroup.observations.sort(
+          (a, b) => b.rawValue.length - a.rawValue.length || b.confidence - a.confidence || a.sourcePage - b.sourcePage
+        );
+        const best = winnerGroup.observations[0];
 
-        // Check for decorative fragment filter (e.g. "NGÂN HÀNG -> PHÁT TRIỂN")
         if (this.isDecorativeFragment(best, obsGroup.length)) {
           rejectedCount += obsGroup.length;
           continue;
@@ -1077,9 +1722,17 @@ export class MetadataFilterEngine {
 
         const qualityScore = this.calculateQualityScore(best, obsGroup.length, cluster.semanticType);
 
-        // Visibility Classification
+        // Core fields vs Additional fields according to Product Priority
+        const isCoreCandidate =
+          cluster.semanticType !== 'OTHER' &&
+          cluster.semanticType !== 'STATEMENT_TIMESTAMP' &&
+          cluster.semanticType !== 'OPENING_DATE' &&
+          cluster.semanticType !== 'OPENING_BALANCE' &&
+          cluster.semanticType !== 'CLOSING_BALANCE' &&
+          cluster.semanticType !== 'ADDRESS';
+
         let visibilityClass: VisibilityClass = 'ADDITIONAL';
-        if (cluster.semanticType !== 'OTHER' && qualityScore >= METADATA_CONFIG.CORE_MIN_QUALITY) {
+        if (isCoreCandidate && qualityScore >= METADATA_CONFIG.CORE_MIN_QUALITY) {
           visibilityClass = 'CORE';
           coreCount++;
         } else if (qualityScore >= METADATA_CONFIG.ADDITIONAL_MIN_QUALITY) {
@@ -1088,12 +1741,12 @@ export class MetadataFilterEngine {
         } else {
           visibilityClass = 'REJECTED';
           rejectedCount += obsGroup.length;
-          continue; // Do not emit rejected items to canonicalMetadata
+          continue;
         }
 
         canonicalMetadata.push({
           label: this.cleanDisplayLabel(best.rawLabel),
-          value: best.rawValue.trim(), // Preserve exact raw string (leading zeros, etc.)
+          value: best.rawValue.trim(),
           rawLabel: best.rawLabel,
           rawValue: best.rawValue,
           confidence: best.confidence,
@@ -1107,10 +1760,11 @@ export class MetadataFilterEngine {
           visibilityClass,
         });
       } else {
-        // --- DIFFERENT VALUES FOR SAME SEMANTIC CONCEPT -> CONFLICT ITEM ---
+        // --- GENUINE CONFLICT (DIFFERENT VALUES FOR SAME CONCEPT) -> CONFLICT ITEM ---
         conflictCount++;
-        obsGroup.sort((a, b) => b.confidence - a.confidence || a.sourcePage - b.sourcePage);
-        const primary = obsGroup[0];
+        // Sort valGroups by total confidence / primary confidence
+        valGroups.sort((a, b) => b.totalConfidence - a.totalConfidence || b.primaryObs.confidence - a.primaryObs.confidence);
+        const primary = valGroups[0].primaryObs;
 
         const alternatives: Array<{
           rawLabel: string;
@@ -1118,24 +1772,28 @@ export class MetadataFilterEngine {
           confidence: number;
           sourcePage: number;
         }> = [];
-        const seenVals = new Set<string>();
-        seenVals.add(primary.normalizedValueForMatch!);
 
-        for (const obs of obsGroup) {
-          if (!seenVals.has(obs.normalizedValueForMatch!)) {
-            seenVals.add(obs.normalizedValueForMatch!);
-            alternatives.push({
-              rawLabel: obs.rawLabel,
-              rawValue: obs.rawValue.trim(),
-              confidence: obs.confidence,
-              sourcePage: obs.sourcePage,
-            });
-          }
+        for (let i = 1; i < valGroups.length; i++) {
+          const altObs = valGroups[i].primaryObs;
+          alternatives.push({
+            rawLabel: altObs.rawLabel,
+            rawValue: altObs.rawValue.trim(),
+            confidence: altObs.confidence,
+            sourcePage: altObs.sourcePage,
+          });
         }
 
         const qualityScore = this.calculateQualityScore(primary, obsGroup.length, cluster.semanticType);
+        const isCoreCandidate =
+          cluster.semanticType !== 'OTHER' &&
+          cluster.semanticType !== 'STATEMENT_TIMESTAMP' &&
+          cluster.semanticType !== 'OPENING_DATE' &&
+          cluster.semanticType !== 'OPENING_BALANCE' &&
+          cluster.semanticType !== 'CLOSING_BALANCE' &&
+          cluster.semanticType !== 'ADDRESS';
+
         let visibilityClass: VisibilityClass = 'ADDITIONAL';
-        if (cluster.semanticType !== 'OTHER' && qualityScore >= METADATA_CONFIG.CORE_MIN_QUALITY) {
+        if (isCoreCandidate && qualityScore >= METADATA_CONFIG.CORE_MIN_QUALITY) {
           visibilityClass = 'CORE';
           coreCount++;
         } else if (qualityScore >= METADATA_CONFIG.ADDITIONAL_MIN_QUALITY) {
@@ -1166,8 +1824,44 @@ export class MetadataFilterEngine {
       }
     }
 
+    // 4b. Canonical STATEMENT_PERIOD synthesis from STATEMENT_FROM + STATEMENT_TO
+    const fromItem = canonicalMetadata.find((m) => m.semanticType === 'STATEMENT_FROM');
+    const toItem = canonicalMetadata.find((m) => m.semanticType === 'STATEMENT_TO');
+    const hasPeriod = canonicalMetadata.some((m) => m.semanticType === 'STATEMENT_PERIOD');
+
+    if (fromItem && toItem && !hasPeriod) {
+      const periodVal = `${fromItem.value} → ${toItem.value}`;
+      canonicalMetadata.push({
+        label: 'Kỳ sao kê / Statement Period',
+        value: periodVal,
+        rawLabel: 'Kỳ sao kê (Statement Period)',
+        rawValue: periodVal,
+        confidence: Number((Math.min(fromItem.confidence, toItem.confidence)).toFixed(4)),
+        sourcePage: fromItem.sourcePage,
+        keyBoundingPolygon: fromItem.keyBoundingPolygon,
+        valueBoundingPolygon: toItem.valueBoundingPolygon,
+        occurrenceCount: (fromItem.occurrenceCount || 1) + (toItem.occurrenceCount || 1),
+        status: fromItem.status === 'CONFLICT' || toItem.status === 'CONFLICT' ? 'CONFLICT' : 'AUTO',
+        semanticType: 'STATEMENT_PERIOD',
+        qualityScore: Math.max(fromItem.qualityScore || 0.8, toItem.qualityScore || 0.8),
+        visibilityClass: 'CORE',
+      });
+      coreCount++;
+
+      // Demote individual FROM and TO items to ADDITIONAL so only 1 period card is shown in CORE
+      if (fromItem.visibilityClass === 'CORE') {
+        fromItem.visibilityClass = 'ADDITIONAL';
+        coreCount--;
+        additionalCount++;
+      }
+      if (toItem.visibilityClass === 'CORE') {
+        toItem.visibilityClass = 'ADDITIONAL';
+        coreCount--;
+        additionalCount++;
+      }
+    }
+
     // 5. Stable Core Sorting
-    // CORE items first sorted by SEMANTIC_TYPE_ORDER, followed by ADDITIONAL sorted by sourcePage
     canonicalMetadata.sort((a, b) => {
       if (a.visibilityClass === 'CORE' && b.visibilityClass !== 'CORE') return -1;
       if (a.visibilityClass !== 'CORE' && b.visibilityClass === 'CORE') return 1;
@@ -1202,5 +1896,159 @@ export class MetadataFilterEngine {
       canonicalMetadata,
       metrics,
     };
+  }
+
+  /**
+   * Post-Processing Canonical Metadata Clean-up:
+   * Dedupes repeated CORE singleton cards (e.g. STATEMENT_PERIOD),
+   * resolves false conflicts where alternatives are partial/full forms of the same address,
+   * removes bilingual label noise from OPENING_DATE,
+   * suppresses isolated address continuation fragments,
+   * and ensures STATEMENT_FROM + STATEMENT_TO do not duplicate STATEMENT_PERIOD in CORE.
+   */
+  static canonicalizeMetadata(items: OCRMetadataItem[]): OCRMetadataItem[] {
+    if (!items || items.length === 0) return [];
+
+    // Filter out unattached address/table continuation fragments
+    let cleaned = items.filter((m) => {
+      if (m.semanticType === 'OTHER') {
+        const normK = this.normalizeLabel(m.rawLabel || m.label);
+        const normV = this.normalizeLabel(m.rawValue || m.value);
+        // Generic continuation fragment check: contains address district/ward/city words without any standard label
+        if (
+          (normK.includes('an lac') || normK.includes('quan') || normK.includes('phuong')) &&
+          (normV.includes('hcm') || normV.includes('tan') || normV.includes('tp'))
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // Check if STATEMENT_PERIOD is present or synthesized
+    const fromItem = cleaned.find((m) => m.semanticType === 'STATEMENT_FROM');
+    const toItem = cleaned.find((m) => m.semanticType === 'STATEMENT_TO');
+    const existingPeriod = cleaned.find((m) => m.semanticType === 'STATEMENT_PERIOD');
+
+    if (fromItem && toItem && !existingPeriod) {
+      const periodVal = `${fromItem.value} → ${toItem.value}`;
+      cleaned.push({
+        id: `period-${fromItem.id || 'from'}-${toItem.id || 'to'}`,
+        label: 'Kỳ sao kê / Statement Period',
+        value: periodVal,
+        rawLabel: 'Kỳ sao kê (Statement Period)',
+        rawValue: periodVal,
+        confidence: Number((Math.min(fromItem.confidence, toItem.confidence)).toFixed(4)),
+        sourcePage: fromItem.sourcePage,
+        keyBoundingPolygon: fromItem.keyBoundingPolygon,
+        valueBoundingPolygon: toItem.valueBoundingPolygon,
+        occurrenceCount: (fromItem.occurrenceCount || 1) + (toItem.occurrenceCount || 1),
+        status: fromItem.status === 'CONFLICT' || toItem.status === 'CONFLICT' ? 'CONFLICT' : 'AUTO',
+        semanticType: 'STATEMENT_PERIOD',
+        qualityScore: Math.max(fromItem.qualityScore || 0.8, toItem.qualityScore || 0.8),
+        visibilityClass: 'CORE',
+      });
+    }
+
+    // Demote STATEMENT_FROM and STATEMENT_TO to ADDITIONAL if STATEMENT_PERIOD exists
+    const hasPeriod = cleaned.some((m) => m.semanticType === 'STATEMENT_PERIOD');
+    if (hasPeriod) {
+      cleaned.forEach((m) => {
+        if ((m.semanticType === 'STATEMENT_FROM' || m.semanticType === 'STATEMENT_TO') && m.visibilityClass === 'CORE') {
+          m.visibilityClass = 'ADDITIONAL';
+        }
+      });
+    }
+
+    // Deduplicate duplicate STATEMENT_PERIOD items in CORE
+    const periods = cleaned.filter((m) => m.semanticType === 'STATEMENT_PERIOD');
+    if (periods.length > 1) {
+      periods.sort((a, b) => b.confidence - a.confidence);
+      const keep = periods[0];
+      cleaned = cleaned.filter((m) => m.semanticType !== 'STATEMENT_PERIOD' || m === keep);
+    }
+
+    // Clean false conflicts
+    cleaned.forEach((m) => {
+      // 1. ADDRESS: partial vs full address
+      if (m.semanticType === 'ADDRESS' && m.status === 'CONFLICT' && m.alternatives && m.alternatives.length > 0) {
+        const normVal = this.normalizeAlphaNumeric(m.value);
+        let bestVal = m.value;
+        let bestConf = m.confidence;
+        let isContained = true;
+
+        for (const alt of m.alternatives) {
+          const normAlt = this.normalizeAlphaNumeric(alt.rawValue);
+          if (normVal.startsWith(normAlt) || normAlt.startsWith(normVal) || normVal.includes(normAlt) || normAlt.includes(normVal)) {
+            if (alt.rawValue.length > bestVal.length) {
+              bestVal = alt.rawValue;
+              bestConf = Math.max(bestConf, alt.confidence);
+            }
+          } else {
+            isContained = false;
+            break;
+          }
+        }
+
+        if (isContained) {
+          m.value = bestVal;
+          m.rawValue = bestVal;
+          m.confidence = bestConf;
+          m.status = 'AUTO';
+          m.alternatives = undefined;
+        }
+      }
+
+      // 2. OPENING_DATE: bilingual sub-label noise in alternatives (e.g. "(Maturity Date)")
+      if (m.semanticType === 'OPENING_DATE' && m.status === 'CONFLICT' && m.alternatives && m.alternatives.length > 0) {
+        const realAlts = m.alternatives.filter(
+          (alt) => /\d/.test(alt.rawValue) && !/^\s*\([a-zA-Z\s]+\)\s*$/.test(alt.rawValue)
+        );
+        if (realAlts.length === 0) {
+          m.status = 'AUTO';
+          m.alternatives = undefined;
+        } else {
+          // Check if all real alternatives normalize to the same date
+          const normD = this.normalizeDate(m.value);
+          const allSameDate = normD && realAlts.every((alt) => this.normalizeDate(alt.rawValue) === normD);
+          if (allSameDate) {
+            m.status = 'AUTO';
+            m.alternatives = undefined;
+          } else {
+            m.alternatives = realAlts;
+          }
+        }
+      }
+
+      // 3. General Date fields: check if alternatives normalize to same date
+      if (
+        (m.semanticType === 'STATEMENT_DATE' || m.semanticType === 'STATEMENT_FROM' || m.semanticType === 'STATEMENT_TO') &&
+        m.status === 'CONFLICT' &&
+        m.alternatives &&
+        m.alternatives.length > 0
+      ) {
+        const normD = this.normalizeDate(m.value);
+        if (normD && m.alternatives.every((alt) => this.normalizeDate(alt.rawValue) === normD)) {
+          m.status = 'AUTO';
+          m.alternatives = undefined;
+        }
+      }
+    });
+
+    // Stable sort
+    cleaned.sort((a, b) => {
+      if (a.visibilityClass === 'CORE' && b.visibilityClass !== 'CORE') return -1;
+      if (a.visibilityClass !== 'CORE' && b.visibilityClass === 'CORE') return 1;
+
+      if (a.visibilityClass === 'CORE' && b.visibilityClass === 'CORE') {
+        const orderA = a.semanticType ? SEMANTIC_TYPE_ORDER[a.semanticType] || 99 : 99;
+        const orderB = b.semanticType ? SEMANTIC_TYPE_ORDER[b.semanticType] || 99 : 99;
+        if (orderA !== orderB) return orderA - orderB;
+      }
+
+      return a.sourcePage - b.sourcePage;
+    });
+
+    return cleaned;
   }
 }

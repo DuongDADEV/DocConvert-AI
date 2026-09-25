@@ -28,6 +28,40 @@ export interface QuotaInfo {
   message?: string;
 }
 
+export type PageClassification = 'NATIVE_TEXT' | 'SCANNED' | 'MIXED' | 'UNCERTAIN';
+
+export interface PreflightSummary {
+  nativeTextPages: number;
+  scannedPages: number;
+  mixedPages: number;
+  uncertainPages: number;
+}
+
+export interface DocumentPageItem {
+  id?: string;
+  document_id: string;
+  page_number: number;
+  classification: PageClassification;
+  classification_confidence: number;
+  text_char_count: number;
+  text_block_count: number;
+  text_coverage: number;
+  image_count: number;
+  image_coverage: number;
+  has_full_page_image: boolean;
+  classification_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PreflightDetails {
+  pageCount: number;
+  summary: PreflightSummary;
+  estimatedCredits: number;
+  pages?: DocumentPageItem[];
+  outputType?: 'EXCEL' | 'WORD' | string;
+}
+
 export interface DocumentItem {
   id: string;
   user_id: string;
@@ -40,7 +74,9 @@ export interface DocumentItem {
   storage_bucket: string;
   storage_path: string;
   document_type: string;
-  status: 'UPLOADED' | 'QUEUED' | 'PROCESSING' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED' | 'DELETED';
+  status: 'UPLOADED' | 'WAITING_CONFIRMATION' | 'QUEUED' | 'PROCESSING' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED' | 'DELETED';
+  preflight_summary?: PreflightSummary | null;
+  output_type?: 'EXCEL' | 'WORD' | string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -121,12 +157,17 @@ export type SemanticType =
   | 'CUSTOMER_ID'
   | 'STATEMENT_FROM'
   | 'STATEMENT_TO'
+  | 'STATEMENT_PERIOD'
   | 'CURRENCY'
   | 'ACCOUNT_TYPE'
   | 'BRANCH'
   | 'ADDRESS'
   | 'TAX_CODE'
   | 'STATEMENT_DATE'
+  | 'OPENING_DATE'
+  | 'OPENING_BALANCE'
+  | 'CLOSING_BALANCE'
+  | 'STATEMENT_TIMESTAMP'
   | 'OTHER';
 
 export type VisibilityClass = 'CORE' | 'ADDITIONAL' | 'REJECTED';

@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import crypto from 'crypto';
 import { PDFDocument } from 'pdf-lib';
-import { db } from '../db/db.js';
+import { db, DocumentPageRecord } from '../db/db.js';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.js';
 import { storageService } from '../services/storageService.js';
 import { ocrService } from '../services/ocrService.js';
@@ -14,8 +14,28 @@ import { ocrRateLimiter, exportRateLimiter } from '../middleware/rateLimiter.js'
 import { DataNormalizer } from '../services/ocr/normalizer.js';
 import { createSupabaseUserClient, getSupabaseAdminClient } from '../services/supabaseClient.js';
 import { UnifiedTableService } from '../services/unifiedTableService.js';
+import { preflightService, PREFLIGHT_CONFIG } from '../services/preflightService.js';
 
 const router = express.Router();
+
+/**
+ * Decodes original filename to preserve Vietnamese and Unicode characters.
+ * Multer/busboy parses multipart headers as Latin-1 by default.
+ * Converting Latin-1 byte representation back to UTF-8 recovers the original Unicode string.
+ * Guard with '\ufffd' check to prevent over-decoding strings that are already UTF-8.
+ */
+export function decodeOriginalFilename(rawName?: string): string {
+  if (!rawName) return 'document.pdf';
+  try {
+    const decoded = Buffer.from(rawName, 'latin1').toString('utf8');
+    if (!decoded.includes('\ufffd')) {
+      return decoded.normalize('NFC');
+    }
+  } catch {
+    // fallback to original if decoding fails
+  }
+  return rawName.normalize('NFC');
+}
 
 // Multer in-memory storage configuration
 const upload = multer({
@@ -25,7 +45,8 @@ const upload = multer({
   },
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/pjpeg'];
-    const ext = path.extname(file.originalname).toLowerCase();
+    const decodedName = decodeOriginalFilename(file.originalname);
+    const ext = path.extname(decodedName).toLowerCase();
     const allowedExts = ['.pdf', '.jpg', '.jpeg', '.png'];
 
     if (allowedTypes.includes(file.mimetype) || allowedExts.includes(ext)) {
@@ -149,7 +170,7 @@ router.post('/:id/signed-url', async (req: AuthenticatedRequest, res: Response):
   }
 });
 
-// 5. UPLOAD DOCUMENT TO SUPABASE STORAGE
+// 5. UPLOAD DOCUMENT TO SUPABASE STORAGE & RUN PREFLIGHT (No OCR triggered, No Quota consumed)
 router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
@@ -163,7 +184,7 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
       return;
     }
 
-    // Step 1: Server-Side Quota Enforcement
+    // Step 1: Pre-check User Quota (Verification only, NOT consumed yet)
     const quota = await quotaService.checkUserQuota(userId);
     if (!quota.allowed) {
       res.status(403).json({
@@ -173,65 +194,78 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
       return;
     }
 
+    const rawName = (typeof req.body?.originalName === 'string' && req.body.originalName.trim())
+      ? req.body.originalName.trim()
+      : file.originalname;
+    const originalFilename = decodeOriginalFilename(rawName);
+
     const documentId = crypto.randomUUID();
-    const ext = path.extname(file.originalname).toLowerCase();
+    const ext = path.extname(originalFilename).toLowerCase();
     const fileType = ext === '.pdf' ? 'PDF' : ext === '.png' ? 'PNG' : 'JPG';
 
     let isFileSaved = false;
     let isDocumentCreated = false;
-    let isJobCreated = false;
 
     try {
       // Step 2: Save to Private Supabase Storage (Bucket: 'documents')
       const saved = await storageService.saveFile(
         userId,
         documentId,
-        file.originalname,
+        originalFilename,
         file.buffer,
         file.mimetype,
         req.userToken
       );
       isFileSaved = true;
 
-      // Step 3: Calculate actual PDF Page Count before database record creation
-      let pageCount = 1;
-      if (fileType === 'PDF') {
-        try {
-          const pdfDoc = await PDFDocument.load(file.buffer);
-          pageCount = pdfDoc.getPageCount();
-        } catch (pdfErr) {
-          pageCount = 1;
-        }
-      }
+      // Step 3: Run Deterministic Preflight Engine (Local analysis, zero OCR/Azure calls)
+      const preflightResult = await preflightService.analyzeDocument(
+        file.buffer,
+        file.mimetype,
+        originalFilename
+      );
 
-      // Create Document Record in Database
+      // Step 4: Create Document Record in Database with status = 'WAITING_CONFIRMATION'
       const newDoc = await db.createDocument({
         id: documentId,
         user_id: userId,
-        original_filename: file.originalname,
+        original_filename: originalFilename,
         file_name: saved.fileName,
         file_type: fileType,
         mime_type: file.mimetype,
         file_size: saved.fileSize,
-        page_count: pageCount,
+        page_count: preflightResult.pageCount,
         storage_bucket: saved.storageBucket,
         storage_path: saved.storagePath,
         document_type: 'BANK_STATEMENT',
-        status: 'QUEUED',
+        status: 'WAITING_CONFIRMATION',
+        preflight_summary: preflightResult.summary,
+        output_type: 'EXCEL',
       }, req.userToken);
       isDocumentCreated = true;
 
-      // Step 4: Create Processing Job in QUEUED state
-      const job = await ocrService.queueDocumentForProcessing(userId, documentId);
-      isJobCreated = true;
+      // Step 5: Save page-by-page Preflight analysis into normalized document_pages
+      const pageRecords: DocumentPageRecord[] = preflightResult.pages.map((p) => ({
+        id: crypto.randomUUID(),
+        document_id: documentId,
+        page_number: p.pageNumber,
+        classification: p.classification,
+        classification_confidence: p.classificationConfidence,
+        text_char_count: p.textCharCount,
+        text_block_count: p.textBlockCount,
+        text_coverage: p.textCoverage,
+        image_count: p.imageCount,
+        image_coverage: p.imageCoverage,
+        has_full_page_image: p.hasFullPageImage,
+        classification_reason: p.classificationReason,
+      }));
 
-      // Step 5: Atomically Deduct Quota
-      const updatedQuota = await quotaService.consumeQuota(userId);
+      await db.createDocumentPages(pageRecords, req.userToken);
 
-      // Step 6: Log Audit Trail
+      // Step 6: Log Audit Trail (UPLOAD_PREFLIGHT_COMPLETED)
       await auditService.log({
         userId,
-        action: 'UPLOAD_DOCUMENT',
+        action: 'UPLOAD_PREFLIGHT_COMPLETED',
         resourceType: 'documents',
         resourceId: documentId,
         ipAddress: req.ip,
@@ -239,32 +273,28 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
           filename: file.originalname,
           fileSize: saved.fileSize,
           fileType,
-          storageBucket: saved.storageBucket,
-          storagePath: saved.storagePath,
+          pageCount: preflightResult.pageCount,
+          preflightSummary: preflightResult.summary,
+          estimatedCredits: preflightResult.estimatedCredits,
         },
       });
 
       res.status(201).json({
         success: true,
-        message: 'Tải tài liệu lên thành công. Tác vụ xử lý đã được đưa vào hàng đợi.',
+        message: 'Tải tài liệu và phân tích cấu trúc hoàn tất. Vui lòng xác nhận để bắt đầu xử lý.',
         document: newDoc,
-        job,
-        quota: updatedQuota,
+        preflight: {
+          pageCount: preflightResult.pageCount,
+          summary: preflightResult.summary,
+          estimatedCredits: preflightResult.estimatedCredits,
+          pages: preflightResult.pages,
+        },
+        quota, // Quota is NOT consumed at this point!
       });
     } catch (pipelineErr: any) {
-      console.error(`[Upload Pipeline Error] docId: ${documentId}, isFileSaved: ${isFileSaved}, isDocumentCreated: ${isDocumentCreated}, isJobCreated: ${isJobCreated}. Initiating compensating cleanup...`, pipelineErr);
+      console.error(`[Upload Pipeline Error] docId: ${documentId}, isFileSaved: ${isFileSaved}, isDocumentCreated: ${isDocumentCreated}. Initiating compensating cleanup...`, pipelineErr);
 
-      // Compensating cleanup in reverse order to ensure zero orphan records / files
       if (isFileSaved) {
-        if (isJobCreated) {
-          try {
-            const client = req.userToken ? createSupabaseUserClient(req.userToken) : getSupabaseAdminClient();
-            await client.from('processing_jobs').delete().eq('document_id', documentId).eq('user_id', userId);
-          } catch (jobCleanupErr) {
-            console.error('[Compensating Cleanup] Error deleting orphan job:', jobCleanupErr);
-          }
-        }
-
         if (isDocumentCreated) {
           try {
             await db.hardDeleteDocument(userId, documentId, req.userToken);
@@ -288,6 +318,206 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
       success: false,
       error: err.message || 'Có lỗi xảy ra khi tải tài liệu. Vui lòng thử lại.',
     });
+  }
+});
+
+// 5.1 CONFIRM AND TRIGGER EXPENSIVE OCR PROCESSING PIPELINE
+router.post('/:id/process', ocrRateLimiter, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const userId = req.user!.id;
+  const docId = req.params.id;
+  const requestedOutputType = (req.body?.outputType || 'EXCEL').toUpperCase();
+
+  console.log(`[PROCESSING_CONFIRM_REQUESTED] docId: ${docId}, userId: ${userId}, outputType: ${requestedOutputType}`);
+
+  try {
+    // 1. Verify Document existence & ownership
+    const document = await db.getUserDocumentById(userId, docId, req.userToken);
+    if (!document) {
+      console.warn(`[PROCESSING_CONFIRM_REJECTED] docId ${docId} not found or unauthorized`);
+      res.status(404).json({
+        success: false,
+        error: 'Tài liệu không tồn tại hoặc bạn không có quyền truy cập.',
+      });
+      return;
+    }
+
+    // 2. Validate Selected Output Type (Word guard - do not route to Excel!)
+    if (requestedOutputType === 'WORD') {
+      console.warn(`[PROCESSING_CONFIRM_REJECTED] Word requested but not supported yet.`);
+      res.status(400).json({
+        success: false,
+        error: 'Chức năng chuyển đổi sang Word (.docx) đang được phát triển (Sắp ra mắt). Vui lòng chọn đầu ra Excel để tiếp tục.',
+      });
+      return;
+    }
+
+    // 3. Idempotency Check: If already queued or processing or completed, return existing job without deducting quota
+    if (document.status === 'QUEUED' || document.status === 'PROCESSING') {
+      const existingJob = await db.getJobByDocumentId(userId, docId);
+      const quota = await quotaService.checkUserQuota(userId);
+      res.json({
+        success: true,
+        message: 'Tài liệu đã nằm trong hàng đợi xử lý.',
+        document,
+        job: existingJob,
+        quota,
+      });
+      return;
+    }
+
+    if (document.status === 'READY' || document.status === 'REVIEW_REQUIRED') {
+      const existingJob = await db.getJobByDocumentId(userId, docId);
+      const quota = await quotaService.checkUserQuota(userId);
+      res.json({
+        success: true,
+        message: 'Tài liệu đã được xử lý hoàn tất.',
+        document,
+        job: existingJob,
+        quota,
+      });
+      return;
+    }
+
+    // Document must be in WAITING_CONFIRMATION or UPLOADED state
+    if (document.status !== 'WAITING_CONFIRMATION' && document.status !== 'UPLOADED') {
+      res.status(400).json({
+        success: false,
+        error: `Trạng thái tài liệu không hợp lệ để bắt đầu xử lý (${document.status}).`,
+      });
+      return;
+    }
+
+    // 4. Server-Side Quota Enforcement
+    const quota = await quotaService.checkUserQuota(userId);
+    if (!quota.allowed) {
+      res.status(403).json({
+        success: false,
+        error: quota.message || 'Bạn đã sử dụng hết số tài liệu của gói hiện tại. Vui lòng nâng cấp gói để tiếp tục xử lý.',
+      });
+      return;
+    }
+
+    // 5. Atomic State Transition Guard (Prevents double clicks, parallel tabs, concurrent requests)
+    const transitionedDoc = await db.transitionDocumentStatus(
+      userId,
+      docId,
+      document.status,
+      'QUEUED',
+      requestedOutputType,
+      req.userToken
+    );
+
+    if (!transitionedDoc) {
+      // Another concurrent request won the race and transitioned first!
+      console.warn(`[PROCESSING_CONFIRM_RACE] Concurrent process attempt for docId ${docId}. Returning current state.`);
+      const currentDoc = await db.getUserDocumentById(userId, docId, req.userToken);
+      const currentJob = await db.getJobByDocumentId(userId, docId);
+      const currentQuota = await quotaService.checkUserQuota(userId);
+      res.json({
+        success: true,
+        message: 'Tài liệu đang được xử lý bởi tác vụ trước đó.',
+        document: currentDoc,
+        job: currentJob,
+        quota: currentQuota,
+      });
+      return;
+    }
+
+    // 6. Atomically Deduct Quota (DUY NHẤT TẠI BƯỚC XÁC NHẬN NÀY!)
+    let updatedQuota;
+    try {
+      updatedQuota = await quotaService.consumeQuota(userId);
+    } catch (quotaErr: any) {
+      // Compensate: rollback document status back to WAITING_CONFIRMATION
+      await db.updateDocumentStatus(userId, docId, 'WAITING_CONFIRMATION');
+      res.status(403).json({
+        success: false,
+        error: quotaErr.message || 'Lỗi trừ hạn mức sử dụng.',
+      });
+      return;
+    }
+
+    // 7. Create Processing Job in QUEUED state & Trigger Background Worker
+    let job;
+    try {
+      job = await ocrService.queueDocumentForProcessing(userId, docId);
+    } catch (jobErr: any) {
+      console.error(`[Processing Error] Failed to queue OCR for doc ${docId}:`, jobErr);
+      // Compensating rollback
+      await db.updateDocumentStatus(userId, docId, 'WAITING_CONFIRMATION');
+      res.status(500).json({
+        success: false,
+        error: 'Không thể tạo tác vụ xử lý OCR. Vui lòng thử lại.',
+      });
+      return;
+    }
+
+    // 8. Log Audit Trail (PROCESSING_CONFIRMED)
+    await auditService.log({
+      userId,
+      action: 'PROCESSING_CONFIRMED',
+      resourceType: 'documents',
+      resourceId: docId,
+      ipAddress: req.ip,
+      metadata: {
+        outputType: requestedOutputType,
+        jobId: job.id,
+        pageCount: transitionedDoc.page_count,
+      },
+    });
+
+    console.log(`[PROCESSING_CONFIRMED] docId: ${docId}, jobId: ${job.id}, quotaUsed: ${updatedQuota.used}/${updatedQuota.total}`);
+
+    res.json({
+      success: true,
+      message: 'Đã xác nhận và bắt đầu đưa tài liệu vào hàng đợi xử lý OCR.',
+      document: transitionedDoc,
+      job,
+      quota: updatedQuota,
+    });
+  } catch (err: any) {
+    console.error(`[Process Confirmation Error] docId: ${docId}:`, err);
+    res.status(500).json({
+      success: false,
+      error: err.message || 'Lỗi khi kích hoạt xử lý tài liệu.',
+    });
+  }
+});
+
+// 5.2 GET DOCUMENT PREFLIGHT DETAILS (Document summary + normalized document_pages)
+router.get('/:id/preflight', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const docId = req.params.id;
+
+    const document = await db.getUserDocumentById(userId, docId, req.userToken);
+    if (!document) {
+      res.status(404).json({
+        success: false,
+        error: 'Tài liệu không tồn tại hoặc bạn không có quyền truy cập.',
+      });
+      return;
+    }
+
+    const pages = await db.getDocumentPages(userId, docId, req.userToken);
+
+    res.json({
+      success: true,
+      document,
+      pageCount: document.page_count,
+      summary: document.preflight_summary || {
+        nativeTextPages: 0,
+        scannedPages: 0,
+        mixedPages: 0,
+        uncertainPages: 0,
+      },
+      pages,
+      estimatedCredits: document.page_count * PREFLIGHT_CONFIG.CREDITS_PER_PAGE,
+      outputType: document.output_type || 'EXCEL',
+    });
+  } catch (err: any) {
+    console.error('Get preflight error:', err);
+    res.status(500).json({ success: false, error: 'Không thể tải thông tin phân tích tài liệu.' });
   }
 });
 
