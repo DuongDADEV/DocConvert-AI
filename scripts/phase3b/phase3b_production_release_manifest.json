@@ -1,12 +1,12 @@
 {
-  "releaseId": "phase3b-full-runtime-20261005-02",
+  "releaseId": "phase3b-full-runtime-20261005-04",
   "artifactName": "Full Phase 3B Production Runtime Release Artifact",
-  "createdAt": "2026-10-05T04:35:20.961Z",
+  "createdAt": "2026-10-05T12:59:25.275Z",
   "sourceRevision": {
-    "gitHeadSha": "3b4e41097dbd8222624cb559ce50e79646463d73",
-    "workingTreeDirty": true,
-    "sourceManifestSha256": "115c4844848dcc43fd7103929e2e86f330fb580e0abf8c95f0e87cf6011d8db1",
-    "sourceFileCount": 341,
+    "gitHeadSha": "4bdcba0f6dec6f63d6cbbe59b3379b0b5bab23b0",
+    "workingTreeDirty": false,
+    "sourceManifestSha256": "ce21e9b05dab9dae838789815e560359e9c66c3ad2cfd32b761d9a320d45af5c",
+    "sourceFileCount": 338,
     "baselineDescription": "Full Phase 3B Production Runtime with atomic credit reservation, worker hard gate, and credit ledger hotfix"
   },
   "artifactPaths": {
@@ -19,11 +19,11 @@
   },
   "sha256": {
     "serverBundle": "d927a1f027cbaf912a791c9413d2b273bf17096f3e2adda9bb7f2fb67bbecf97",
-    "materializerScript": "ea1b2370fbe138daa8b79dfb4c74a2e78c9bc988ea00e06da24793f9329d5c57",
+    "materializerScript": "9b7c246e42f9b322a7b0c2c84e1938cd6ee2ca61ab86e3e42f7c5e6369f3605a",
     "packageJson": "fd5694751920fc97edb0d802fa257068fee9df6a4b34705ca79fa312571e8836",
     "packageLockJson": "e29b913f4df1a8cba147290308f9f60d421b09ae2548f973673b45810e2891bc",
-    "sourceManifest": "115c4844848dcc43fd7103929e2e86f330fb580e0abf8c95f0e87cf6011d8db1",
-    "distManifest": "92728ca85225e4944110881dc17efcc5a7ed39ea82a2f5dcd7e66ba1432eaf21"
+    "sourceManifest": "ce21e9b05dab9dae838789815e560359e9c66c3ad2cfd32b761d9a320d45af5c",
+    "distManifest": "0c5eb1c786dc0559a877002396abb8faa7cbe0850c12bce35fa5090d739148e9"
   },
   "databaseBaselineRequirements": {
     "phase2a": {
@@ -82,7 +82,7 @@
     "maintenanceGuardsPreserved": true
   },
   "deploymentInstructions": {
-    "command": "railway up . --path-as-root --no-gitignore --service DocConvert-AI --environment production --message \"phase3b-full-runtime-20261005-01\"",
+    "command": "railway up . --path-as-root --no-gitignore --service DocConvert-AI --environment production --message \"phase3b-full-runtime-20261005-04\"",
     "cwd": ".phase3b_production_artifact",
     "targetWorkspace": "DuongAIOS's Projects",
     "targetProject": "zealous-friendship",
