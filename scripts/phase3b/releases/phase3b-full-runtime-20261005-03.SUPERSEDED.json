@@ -1,0 +1,81 @@
+﻿{
+    "releaseId":  "phase3b-full-runtime-20261005-03",
+    "status":  "SUPERSEDED_NEVER_DEPLOYED",
+    "supersedes":  "phase3b-full-runtime-20261005-02",
+    "createdAt":  "2026-10-05T06:40:00.000Z",
+    "sourceSnapshotOrigin":  "canonical package-lock.json from original Windows repository, reproducible clean handoff snapshot",
+    "historicalStatus":  {
+                             "release01":  "phase3b-full-runtime-20261005-01 superseded and never deployed",
+                             "release02":  "phase3b-full-runtime-20261005-02 superseded and never deployed",
+                             "release03":  "phase3b-full-runtime-20261005-03 superseded and never deployed"
+                         },
+    "canonicalPackageLockSha256":  "e29b913f4df1a8cba147290308f9f60d421b09ae2548f973673b45810e2891bc",
+    "serverBundleSha256":  "d927a1f027cbaf912a791c9413d2b273bf17096f3e2adda9bb7f2fb67bbecf97",
+    "sourceManifestSha256":  "d705890591c40d2dd5dafd322a58d16047cdaefb0c7a0395adf4251ae1dd846f",
+    "distManifestSha256":  "c3bdf918770c22a1372b8c0b7905e5407cdc47107eeacf5213a12c5e4ca03258",
+    "materializerSha256":  "ac65daff327b6a01ec46772c1bc36b2753b86afbab97b93e7e1d720ed311d1b0",
+    "packageJsonSha256":  "fd5694751920fc97edb0d802fa257068fee9df6a4b34705ca79fa312571e8836",
+    "packageLockSha256":  "e29b913f4df1a8cba147290308f9f60d421b09ae2548f973673b45810e2891bc",
+    "sourceFileCount":  337,
+    "databaseBaselineRequirements":  {
+                                         "phase2a":  {
+                                                         "migration":  "20261001000000_credit_ledger_foundation.sql",
+                                                         "requiredTables":  [
+                                                                                "credit_accounts",
+                                                                                "credit_grants",
+                                                                                "credit_ledger"
+                                                                            ]
+                                                     },
+                                         "phase2b":  {
+                                                         "migration":  "20261002010000_credit_reservation_foundation.sql",
+                                                         "requiredTables":  [
+                                                                                "credit_reservations",
+                                                                                "credit_reservation_allocations",
+                                                                                "credit_reservation_events"
+                                                                            ],
+                                                         "requiredConstraint":  "chk_credit_ledger_entry_type: (\u0027GRANT\u0027, \u0027ADJUSTMENT\u0027, \u0027EXPIRATION\u0027, \u0027CAPTURE\u0027)"
+                                                     },
+                                         "phase3a":  {
+                                                         "migration":  "20261003010000_credit_settlement_and_free_bootstrap_patch.sql",
+                                                         "pricingPolicy":  "processing-pricing-v1",
+                                                         "oneTimeBootstrapIndex":  "uq_credit_grants_one_time_free_bootstrap"
+                                                     },
+                                         "phase3bLedgerHotfix":  {
+                                                                     "migration":  "20261005010000_fix_grant_user_credits_ledger_entry_type.sql",
+                                                                     "canonicalMapping":  "p_source_type = \u0027ADMIN_ADJUSTMENT\u0027 -\u003e \u0027ADJUSTMENT\u0027, ELSE \u0027GRANT\u0027",
+                                                                     "ledgerConstraintUnchanged":  true
+                                                                 },
+                                         "phase3bDatabaseMigration":  {
+                                                                          "migration":  "20261004010000_atomic_credit_reserve_before_processing_queue.sql",
+                                                                          "requiredColumns":  {
+                                                                                                  "processing_jobs":  [
+                                                                                                                          "reservation_id UUID",
+                                                                                                                          "pricing_version VARCHAR(50)",
+                                                                                                                          "estimated_billable_units BIGINT",
+                                                                                                                          "quote_snapshot JSONB"
+                                                                                                                      ]
+                                                                                              },
+                                                                          "canonicalConfirmRpc":  "confirm_document_processing(UUID, UUID, VARCHAR, BIGINT, VARCHAR, JSONB, TEXT, JSONB)",
+                                                                          "legacy3ArgRpcStatus":  "DEPRECATED_HARD_FAIL"
+                                                                      }
+                                     },
+    "runtimeInvariants":  {
+                              "extendedConfirmRpcUsed":  true,
+                              "legacy3ArgRpcUsedForNormalProcessing":  false,
+                              "trustedServerQuoteRecomputed":  true,
+                              "clientQuoteCannotOverrideEstimate":  true,
+                              "reservationBeforeQueue":  true,
+                              "workerReservationHardGateActive":  true,
+                              "stageAWorkerBypassRemoved":  true,
+                              "captureSemanticsPreserved":  true,
+                              "releaseSemanticsPreserved":  true,
+                              "ledgerHotfixCompatible":  true,
+                              "freeBootstrapCompatible":  true,
+                              "maintenanceGuardsPreserved":  true
+                          },
+    "deploymentCommand":  "railway up . --path-as-root --no-gitignore --service DocConvert-AI --environment production --message \"phase3b-full-runtime-20261005-03\"",
+    "maintenancePolicy":  "KEEP_MAINTENANCE_TRUE_DURING_DEPLOY_AND_SMOKE",
+    "supersededBy":  "phase3b-full-runtime-20261005-04",
+    "supersededAt":  "2026-10-05",
+    "supersedeReason":  "Audit found out-of-scope source changes (.env.example and tsconfig.json) included in the -03 source fingerprint; -03 was never deployed."
+}
