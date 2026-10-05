@@ -20,6 +20,16 @@ const ROOT_DIR = path.resolve(__dirname, '../..');
 const TARGET_DIR = path.resolve(ROOT_DIR, '.phase3b_production_artifact');
 const RELEASE_ID = 'phase3b-full-runtime-20261005-04';
 
+let gitHeadSha = 'UNKNOWN';
+let workingTreeDirty = true;
+try {
+  gitHeadSha = execSync('git rev-parse HEAD', { cwd: ROOT_DIR }).toString().trim();
+  const gitStatus = execSync('git status --porcelain', { cwd: ROOT_DIR }).toString().trim();
+  workingTreeDirty = gitStatus.length > 0;
+} catch {
+  // Ignore git errors if unavailable
+}
+
 console.log('================================================================');
 console.log(`MATERIALIZING FULL PHASE 3B PRODUCTION ARTIFACT (${RELEASE_ID})`);
 console.log('================================================================');
@@ -212,16 +222,6 @@ const packageLockSha256 = computeSha256(path.join(TARGET_DIR, 'package-lock.json
 const packageJsonSha256 = computeSha256(path.join(TARGET_DIR, 'package.json'));
 const materializerSha256 = computeSha256(__filename);
 
-let gitHeadSha = 'UNKNOWN';
-let workingTreeDirty = true;
-try {
-  gitHeadSha = execSync('git rev-parse HEAD', { cwd: ROOT_DIR }).toString().trim();
-  const gitStatus = execSync('git status --porcelain', { cwd: ROOT_DIR }).toString().trim();
-  workingTreeDirty = gitStatus.length > 0;
-} catch {
-  // Ignore git errors if unavailable
-}
-
 const releaseManifest = {
   releaseId: RELEASE_ID,
   artifactName: 'Full Phase 3B Production Runtime Release Artifact',
@@ -319,5 +319,7 @@ console.log(`Server Bundle SHA : ${serverBundleSha256}`);
 console.log(`Dist Files Count  : ${distFiles.length}`);
 console.log(`Source Files Count: ${sourceFiles.length}`);
 console.log('================================================================\n');
+
+
 
 
