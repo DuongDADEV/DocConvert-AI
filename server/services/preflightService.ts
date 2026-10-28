@@ -1,4 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { processingPricingEngine } from './credit/processingPricingEngine.js';
+import { unitsToCredits } from './credit/creditService.js';
 
 /**
  * ============================================================================
@@ -40,6 +42,7 @@ export interface PreflightResult {
   pageCount: number;
   summary: PreflightSummary;
   pages: DocumentPageAnalysis[];
+  estimatedUnits: number;
   estimatedCredits: number;
   durationMs: number;
 }
@@ -66,7 +69,8 @@ export const PREFLIGHT_CONFIG = {
   MIXED_MIN_CHAR_COUNT: 80,
   MIXED_MIN_IMAGE_COVERAGE: 0.20,
 
-  // Temporary estimation pricing: 1 processed page = 1 estimated Credit
+  // Legacy compatibility reference only. Authoritative pricing is calculated
+  // via ProcessingPricingEngine (LOCAL_NATIVE: 350, AZURE_FULL_PAGE: 1980, HYBRID: 1980 units).
   CREDITS_PER_PAGE: 1,
 };
 
@@ -181,13 +185,16 @@ export class PreflightService {
     };
 
     const durationMs = Date.now() - startTime;
-    console.log(`[PREFLIGHT_COMPLETED] filename: "${filename}", type: IMAGE, pageCount: 1, scanned: 1, duration: ${durationMs}ms`);
+    const estimatedUnits = 1980; // 1 scanned page = 1980 units
+    const estimatedCredits = unitsToCredits(estimatedUnits); // 1.98 Credits
+    console.log(`[PREFLIGHT_COMPLETED] filename: "${filename}", type: IMAGE, pageCount: 1, scanned: 1, units: ${estimatedUnits}, credits: ${estimatedCredits}, duration: ${durationMs}ms`);
 
     return {
       pageCount: 1,
       summary,
       pages: [pageAnalysis],
-      estimatedCredits: PREFLIGHT_CONFIG.CREDITS_PER_PAGE,
+      estimatedUnits,
+      estimatedCredits,
       durationMs,
     };
   }
@@ -277,19 +284,49 @@ export class PreflightService {
     }
 
     const durationMs = Date.now() - startTime;
-    const estimatedCredits = pageCount * PREFLIGHT_CONFIG.CREDITS_PER_PAGE;
+
+    // Phase 7.7 (P0-A): Authoritative estimation via ProcessingPricingEngine
+    let estimatedUnits = 0;
+    let estimatedCredits = 0;
+    try {
+      const pricingEstimate = await processingPricingEngine.estimateProcessingCost({
+        pageCount,
+        pages: pages.map((p) => ({
+          pageNumber: p.pageNumber,
+          classification: p.classification,
+          textCharCount: p.textCharCount,
+          textCoverage: p.textCoverage,
+          imageCoverage: p.imageCoverage,
+          hasFullPageImage: p.hasFullPageImage,
+        })),
+        outputType: 'EXCEL',
+      });
+      estimatedUnits = pricingEstimate.estimatedUnits;
+      estimatedCredits = pricingEstimate.estimatedCredits;
+    } catch (pricingErr: any) {
+      console.warn(`[PREFLIGHT_PRICING_FALLBACK] Pricing estimation fallback for "${filename}":`, pricingErr?.message);
+      // Canonical fallback rates: Native: 350, Scan/Mixed/Uncertain: 1980
+      for (const p of pages) {
+        estimatedUnits += (p.classification === 'NATIVE_TEXT' ? 350 : 1980);
+      }
+      if (pages.length === 0) {
+        estimatedUnits = Math.max(1, pageCount) * 1980;
+      }
+      estimatedCredits = unitsToCredits(estimatedUnits);
+    }
 
     console.log(
       `[PREFLIGHT_COMPLETED] doc: "${filename}", pages: ${pageCount}, ` +
       `native: ${summary.nativeTextPages}, scanned: ${summary.scannedPages}, ` +
       `mixed: ${summary.mixedPages}, uncertain: ${summary.uncertainPages}, ` +
-      `credits: ${estimatedCredits}, duration: ${durationMs}ms (avg ${(durationMs / pageCount).toFixed(1)}ms/page)`
+      `units: ${estimatedUnits}, credits: ${estimatedCredits}, duration: ${durationMs}ms (avg ${(durationMs / pageCount).toFixed(1)}ms/page)`
     );
 
     return {
       pageCount,
       summary,
       pages,
+      estimatedUnits,
       estimatedCredits,
       durationMs,
     };

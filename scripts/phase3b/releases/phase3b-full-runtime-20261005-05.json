@@ -1,0 +1,90 @@
+{
+  "releaseId": "phase3b-full-runtime-20261005-05",
+  "status": "SEALED_NOT_DEPLOYED",
+  "supersedes": "phase3b-full-runtime-20261005-04",
+  "createdAt": "2026-10-06T06:13:51.683Z",
+  "sourceSnapshotOrigin": "clean canonical Windows repository snapshot after Phase 3C / 3C.1 settlement behavioral matrix and financial audit",
+  "historicalStatus": {
+    "release01": "phase3b-full-runtime-20261005-01 superseded and never deployed",
+    "release02": "phase3b-full-runtime-20261005-02 superseded and never deployed",
+    "release03": "phase3b-full-runtime-20261005-03 superseded and never deployed",
+    "release04": "phase3b-full-runtime-20261005-04 sealed and superseded by release05, never deployed",
+    "release05": "phase3b-full-runtime-20261005-05 is current sealed candidate"
+  },
+  "canonicalPackageLockSha256": "e29b913f4df1a8cba147290308f9f60d421b09ae2548f973673b45810e2891bc",
+  "serverBundleSha256": "23b01238c1711b2731c8981e690f35509b285aed90e81e35b5830395c8665ab8",
+  "sourceManifestSha256": "ed84d560153cbada57b8df57e6ac570392b633c76ca1bc38c808c63c43cd7065",
+  "distManifestSha256": "66c0fe89f57297dc3616ed5f7de5f8889e643ea6d6d683de06d033cb57540cef",
+  "materializerSha256": "2c35819bc95384c8c4663b83ff8916677c2f297ee01b9ce3a849f2b6b95d28df",
+  "packageJsonSha256": "fd5694751920fc97edb0d802fa257068fee9df6a4b34705ca79fa312571e8836",
+  "packageLockSha256": "e29b913f4df1a8cba147290308f9f60d421b09ae2548f973673b45810e2891bc",
+  "sourceFileCount": 340,
+  "gitHeadSha": "c9b5faae022819d6d7738cb29e2f8bbc1cb7664d",
+  "workingTreeDirty": true,
+  "databaseBaselineRequirements": {
+    "phase2a": {
+      "migration": "20261001000000_credit_ledger_foundation.sql",
+      "requiredTables": [
+        "credit_accounts",
+        "credit_grants",
+        "credit_ledger"
+      ]
+    },
+    "phase2b": {
+      "migration": "20261002010000_credit_reservation_foundation.sql",
+      "requiredTables": [
+        "credit_reservations",
+        "credit_reservation_allocations",
+        "credit_reservation_events"
+      ],
+      "requiredConstraint": "chk_credit_ledger_entry_type: ('GRANT', 'ADJUSTMENT', 'EXPIRATION', 'CAPTURE')"
+    },
+    "phase3a": {
+      "migration": "20261003010000_credit_settlement_and_free_bootstrap_patch.sql",
+      "pricingPolicy": "processing-pricing-v1",
+      "oneTimeBootstrapIndex": "uq_credit_grants_one_time_free_bootstrap"
+    },
+    "phase3bLedgerHotfix": {
+      "migration": "20261005010000_fix_grant_user_credits_ledger_entry_type.sql",
+      "canonicalMapping": "p_source_type = 'ADMIN_ADJUSTMENT' -> 'ADJUSTMENT', ELSE 'GRANT'",
+      "ledgerConstraintUnchanged": true
+    },
+    "phase3bDatabaseMigration": {
+      "migration": "20261004010000_atomic_credit_reserve_before_processing_queue.sql",
+      "requiredColumns": {
+        "processing_jobs": [
+          "reservation_id UUID",
+          "pricing_version VARCHAR(50)",
+          "estimated_billable_units BIGINT",
+          "quote_snapshot JSONB"
+        ]
+      },
+      "canonicalConfirmRpc": "confirm_document_processing(UUID, UUID, VARCHAR, BIGINT, VARCHAR, JSONB, TEXT, JSONB)",
+      "legacy3ArgRpcStatus": "DEPRECATED_HARD_FAIL"
+    },
+    "phase3cPartialSettlementMigration": {
+      "migration": "20261006010000_fix_partial_credit_reservation_status.sql",
+      "canonicalMapping": "v_remaining_units > 0 -> PARTIALLY_CAPTURED, never invalid ACTIVE",
+      "statusDomainPreserved": true
+    }
+  },
+  "runtimeInvariants": {
+    "extendedConfirmRpcUsed": true,
+    "legacy3ArgRpcUsedForNormalProcessing": false,
+    "trustedServerQuoteRecomputed": true,
+    "clientQuoteCannotOverrideEstimate": true,
+    "reservationBeforeQueue": true,
+    "workerReservationHardGateActive": true,
+    "stageAWorkerBypassRemoved": true,
+    "captureSemanticsPreserved": true,
+    "releaseSemanticsPreserved": true,
+    "settlementBoundedRetries": true,
+    "windowDCrashRecoveryTerminalReleaseHandled": true,
+    "terminalOcrReleaseErrorFlagged": true,
+    "ledgerHotfixCompatible": true,
+    "freeBootstrapCompatible": true,
+    "maintenanceGuardsPreserved": true
+  },
+  "deploymentCommand": "railway up . --path-as-root --no-gitignore --service DocConvert-AI --environment production --message \"phase3b-full-runtime-20261005-05\"",
+  "maintenancePolicy": "KEEP_MAINTENANCE_TRUE_DURING_DEPLOY_AND_SMOKE"
+}

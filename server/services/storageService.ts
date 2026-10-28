@@ -186,23 +186,42 @@ class StorageService {
     const safeUserId = this.sanitize(userId);
     const safeDocId = this.sanitize(documentId);
 
-    const client = (userToken ? createSupabaseUserClient(userToken) : null) || getSupabaseAdminClient() || getBaseSupabaseClient();
-    if (client) {
-      try {
-        const { data: files } = await client.storage
-          .from(this.BUCKET)
-          .list(`${safeUserId}/${safeDocId}/original`);
-
-        if (files && files.length > 0) {
-          const filePaths = files.map((f) => `${safeUserId}/${safeDocId}/original/${f.name}`);
-          await client.storage.from(this.BUCKET).remove(filePaths);
-        }
-      } catch (err) {
-        console.warn('Storage deletion warning:', err);
-      }
+    // Defensive check against path traversal
+    if (safeUserId.includes('..') || safeDocId.includes('..')) {
+      console.warn(`[StorageService.deleteDocumentFiles] Invalid path traversal attempt for user ${safeUserId}`);
+      return false;
     }
 
-    return true;
+    const client = (userToken ? createSupabaseUserClient(userToken) : null) || getSupabaseAdminClient() || getBaseSupabaseClient();
+    if (!client) {
+      console.warn(`[StorageService.deleteDocumentFiles] Supabase client unavailable for deletion of ${safeDocId}`);
+      return false;
+    }
+
+    try {
+      const { data: files, error: listErr } = await client.storage
+        .from(this.BUCKET)
+        .list(`${safeUserId}/${safeDocId}/original`);
+
+      if (listErr) {
+        console.warn(`[StorageService.deleteDocumentFiles] Failed to list files for ${safeDocId}: ${listErr.message}`);
+        return false;
+      }
+
+      if (files && files.length > 0) {
+        const filePaths = files.map((f) => `${safeUserId}/${safeDocId}/original/${f.name}`);
+        const { error: removeErr } = await client.storage.from(this.BUCKET).remove(filePaths);
+        if (removeErr) {
+          console.warn(`[StorageService.deleteDocumentFiles] Failed to remove files for ${safeDocId}: ${removeErr.message}`);
+          return false;
+        }
+      }
+
+      return true;
+    } catch (err: any) {
+      console.warn(`[StorageService.deleteDocumentFiles] Unexpected exception deleting files for ${safeDocId}:`, err?.message || err);
+      return false;
+    }
   }
 }
 

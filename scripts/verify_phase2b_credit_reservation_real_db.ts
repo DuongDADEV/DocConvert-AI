@@ -44,40 +44,92 @@ async function verifyRealDb() {
   // -------------------------------------------------------------------------
   // 1. LEGACY INTEGRITY CHECKS
   // -------------------------------------------------------------------------
+  const LEGACY_BASELINE_COHORT: Record<string, string> = {
+    // 3 historical 7_DAYS_FULL profiles
+    '2e26467a-0422-4e6f-bbf8-fbce77c0965e': '7_DAYS_FULL',
+    '27a10269-da23-4bfd-aa19-5ed66b974eff': '7_DAYS_FULL',
+    '0c7c3c73-e67b-4ab4-9499-2101950a755c': '7_DAYS_FULL',
+    // 21 historical FREE profiles
+    '06cc5335-ff6f-47ce-ab19-3f465cf355ff': 'FREE',
+    '85109866-9c44-457b-83ba-9555024bf04c': 'FREE',
+    '9a0bd413-02ef-4eb7-82c3-3d5576b6c67c': 'FREE',
+    '7a96ede8-cf20-497a-8e8f-bb9bbab80e16': 'FREE',
+    '30ed6381-0d2f-4d4a-a2f6-d8e0ac07452c': 'FREE',
+    'd7ef1240-9477-4259-a3ae-ab7e1e48d2fb': 'FREE',
+    'd99a24f8-ceb7-4ebf-b9e6-a3491f06e41a': 'FREE',
+    'f4bb2c7c-6615-4136-8170-657f09411ee3': 'FREE',
+    '93debcd6-eb11-4a0b-b663-e2d15ec79d3e': 'FREE',
+    '9ba13e42-8175-43cf-9add-25db46b16415': 'FREE',
+    'ea859e68-5642-4dac-9c12-833b2b838a39': 'FREE',
+    'f8267aaf-e797-46bc-8dec-1520929476cd': 'FREE',
+    '62cb6662-9e06-4d0b-aff5-7cdd4493486f': 'FREE',
+    '787ec8af-6c94-44dc-bbc4-c80115bfd14d': 'FREE',
+    '0b1cc75a-23b3-466c-85ba-414bbd40cb2d': 'FREE',
+    'a5f4f4d3-0e7d-42c7-a69c-460ace437558': 'FREE',
+    '38ab827b-278c-48af-9589-b3c16c866ccf': 'FREE',
+    '76e91583-0d14-4d12-96eb-522966b8a0c3': 'FREE',
+    'a74d0a13-ba26-4af6-a577-65a914aa65ca': 'FREE',
+    '8de2c72c-6add-4fca-b49a-b447f3470e14': 'FREE',
+    '6a185b15-eae5-4ac5-81c4-a11af566ef0b': 'FREE',
+  };
+
+  let plansData: Array<{ id: string; document_quota: number; is_active: boolean }> | null = null;
+  let plErr: any = null;
+
   try {
-    const { data: profiles, error: pErr } = await supabase
-      .from('profiles')
-      .select('id, current_plan_id, used_documents');
+    const [profilesRes, plansRes] = await Promise.all([
+      supabase.from('profiles').select('id, current_plan_id, used_documents'),
+      supabase.from('plans').select('id, document_quota, is_active').order('id'),
+    ]);
+
+    const profiles = profilesRes.data;
+    const pErr = profilesRes.error;
+    plansData = plansRes.data;
+    plErr = plansRes.error;
 
     if (pErr) throw pErr;
+    if (plErr) throw plErr;
 
-    const count = profiles?.length || 0;
-    const planCounts: Record<string, number> = {};
-    profiles?.forEach((p) => {
-      planCounts[p.current_plan_id] = (planCounts[p.current_plan_id] || 0) + 1;
-    });
+    const validPlanIds = (plansData || []).map((p) => p.id);
+    const profileMap = new Map((profiles || []).map((p) => [p.id, p]));
 
-    if (count === 24 && planCounts['FREE'] === 21 && planCounts['7_DAYS_FULL'] === 3) {
+    const missingCohortIds: string[] = [];
+    const mutatedCohortPlans: Array<{ id: string; expected: string; actual: string }> = [];
+
+    for (const [cohortId, expectedPlan] of Object.entries(LEGACY_BASELINE_COHORT)) {
+      const p = profileMap.get(cohortId);
+      if (!p) {
+        missingCohortIds.push(cohortId);
+      } else if (p.current_plan_id !== expectedPlan) {
+        mutatedCohortPlans.push({ id: cohortId, expected: expectedPlan, actual: p.current_plan_id });
+      }
+    }
+
+    const invalidProfiles = (profiles || []).filter((p) => !validPlanIds.includes(p.current_plan_id));
+    const cohortIntact = missingCohortIds.length === 0 && mutatedCohortPlans.length === 0;
+    const allPlansExistInCatalog = validPlanIds.length > 0 && invalidProfiles.length === 0;
+
+    if (cohortIntact && allPlansExistInCatalog) {
       logCheck({
         id: 'CHK-LEGACY-01',
-        name: 'Legacy profiles count and plan distribution strictly preserved (24 total: 21 FREE, 3 7_DAYS_FULL)',
+        name: 'Legacy baseline cohort (24 profiles: 21 FREE, 3 7_DAYS_FULL) strictly preserved by ID and plan',
         category: 'LEGACY_INTEGRITY',
         status: 'PASS',
-        details: `Profiles: ${count} (${JSON.stringify(planCounts)})`,
+        details: `Verified 24/24 cohort profiles intact by ID. All ${profiles?.length || 0} profiles reference valid public.plans (${validPlanIds.join(', ')})`,
       });
     } else {
       logCheck({
         id: 'CHK-LEGACY-01',
-        name: 'Legacy profiles count and plan distribution preserved',
+        name: 'Legacy baseline cohort preserved',
         category: 'LEGACY_INTEGRITY',
         status: 'FAIL',
-        details: `Unexpected count or distribution: ${count} (${JSON.stringify(planCounts)})`,
+        details: `Integrity failure: missing=${missingCohortIds.length}, mutated=${mutatedCohortPlans.length}, invalid_plan_refs=${invalidProfiles.length}`,
       });
     }
   } catch (err: any) {
     logCheck({
       id: 'CHK-LEGACY-01',
-      name: 'Legacy profiles count',
+      name: 'Legacy profiles cohort verification',
       category: 'LEGACY_INTEGRITY',
       status: 'FAIL',
       details: err.message,
@@ -85,13 +137,9 @@ async function verifyRealDb() {
   }
 
   try {
-    const { data: plans, error: plErr } = await supabase
-      .from('plans')
-      .select('id, document_quota, is_active')
-      .order('id');
-
     if (plErr) throw plErr;
 
+    const plans = plansData;
     const planIds = plans?.map((p) => p.id) || [];
     const expected = ['30_DAYS_FULL', '7_DAYS_FULL', 'FREE'];
     const matches = expected.every((id) => planIds.includes(id)) && planIds.length === 3;

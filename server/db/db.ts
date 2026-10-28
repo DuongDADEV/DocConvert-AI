@@ -258,6 +258,16 @@ export interface ActiveSession {
 }
 
 export class DatabaseService {
+  private adminClientOverride: any = null;
+
+  setAdminClientOverride(client: any): void {
+    this.adminClientOverride = client;
+  }
+
+  private getAdminClient(): any {
+    return this.adminClientOverride || getSupabaseAdminClient();
+  }
+
   /**
    * Helper to resolve the appropriate Supabase Client:
    * Uses User-Scoped Client (with Bearer Token for RLS) when userToken is passed,
@@ -268,7 +278,7 @@ export class DatabaseService {
       const userClient = createSupabaseUserClient(userToken);
       if (userClient) return userClient;
     }
-    return getSupabaseAdminClient();
+    return this.getAdminClient();
   }
 
   // --- PLANS ---
@@ -323,6 +333,106 @@ export class DatabaseService {
       .select()
       .single();
     return data || null;
+  }
+
+  /**
+   * Phase 7.7 (P0-B): Safe, Idempotent Quota Rollback for Terminal Job Failure.
+   *
+   * Invariants:
+   * 1. Safely decrements profiles.used_documents by 1: GREATEST(0, used_documents - 1).
+   * 2. Idempotent: checks and marks quote_snapshot.quota_refunded = true; repeat calls do not double decrement.
+   * 3. State guard: never decrements if the job succeeded (status === 'READY' or 'REVIEW_REQUIRED').
+   * 4. User isolation: strictly constrained to (job.user_id === userId).
+   * 5. Atomicity: attempts database RPC rollback_document_quota if available, with robust application-level fallback.
+   */
+  async rollbackDocumentQuota(
+    userId: string,
+    jobId: string
+  ): Promise<{
+    success: boolean;
+    alreadyRolledBack?: boolean;
+    usedDocuments?: number;
+    reason?: string;
+  }> {
+    const client = this.getAdminClient();
+
+    // 1. Attempt PostgreSQL RPC rollback_document_quota if present
+    try {
+      const { data, error } = await client.rpc('rollback_document_quota', {
+        p_user_id: userId,
+        p_job_id: jobId,
+      });
+
+      if (!error && data) {
+        return {
+          success: Boolean(data.success),
+          alreadyRolledBack: Boolean(data.already_rolled_back),
+          usedDocuments: data.used_documents,
+          reason: data.reason,
+        };
+      }
+    } catch {
+      // RPC not yet deployed in target database, proceed with application-level fallback
+    }
+
+    // 2. Application-Level Fallback Guard
+    const job = await this.getProcessingJob(userId, jobId);
+    if (!job) {
+      return { success: false, reason: 'JOB_NOT_FOUND' };
+    }
+
+    // Guard: Do not roll back if job has already succeeded
+    if (job.status === 'READY' || job.status === 'REVIEW_REQUIRED') {
+      return { success: false, reason: 'JOB_ALREADY_SUCCEEDED' };
+    }
+
+    // Guard: Idempotency check against quote_snapshot
+    const quoteSnapshot = (job.quote_snapshot as Record<string, any>) || {};
+    if (quoteSnapshot.quota_refunded === true) {
+      const profile = await this.findProfileById(userId);
+      return {
+        success: true,
+        alreadyRolledBack: true,
+        usedDocuments: profile?.used_documents,
+      };
+    }
+
+    // Update job quote_snapshot to record quota_refunded = true
+    const updatedSnapshot = {
+      ...quoteSnapshot,
+      quota_refunded: true,
+      quota_refunded_at: new Date().toISOString(),
+    };
+
+    const { error: jobErr } = await client
+      .from('processing_jobs')
+      .update({
+        quote_snapshot: updatedSnapshot,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', jobId)
+      .eq('user_id', userId);
+
+    if (jobErr) {
+      console.error(`[rollbackDocumentQuota] Error marking job ${jobId} as refunded:`, jobErr.message);
+      throw jobErr;
+    }
+
+    // Decrement user profile used_documents (safe non-negative integer)
+    const profile = await this.findProfileById(userId);
+    if (!profile) {
+      return { success: false, reason: 'PROFILE_NOT_FOUND' };
+    }
+
+    const currentUsed = profile.used_documents || 0;
+    const newUsed = Math.max(0, currentUsed - 1);
+    const updatedProfile = await this.updateProfileUsage(userId, newUsed);
+
+    return {
+      success: true,
+      alreadyRolledBack: false,
+      usedDocuments: updatedProfile?.used_documents ?? newUsed,
+    };
   }
 
   async getDocument(userId: string, documentId: string, userToken?: string) {
@@ -744,15 +854,17 @@ export class DatabaseService {
   }
 
   /**
-   * Phase 3B.1: Validates reservation existence, status, ownership, bidirectional consistency,
-   * amount, and held units before OCR worker execution.
-   */
+ * Phase 3B.1: Validates reservation existence, ownership, bidirectional consistency,
+ * amount, lifecycle status, and held units before OCR worker execution.
+ */
   async getValidatedReservationForJob(job: ProcessingJobRecord): Promise<{
     valid: boolean;
     reason?: string;
     reservation?: any;
   }> {
-    // Historical job check: If job has no reservation_id and no pricing_version, it is a historical pre-Phase-3B job.
+    // Historical job check:
+    // If job has no reservation_id and no pricing_version,
+    // it is a historical pre-Phase-3B job.
     if (!job.reservation_id && !job.pricing_version) {
       return {
         valid: false,
@@ -760,11 +872,16 @@ export class DatabaseService {
       };
     }
 
+    // 1. Reservation linkage must exist on the job
     if (!job.reservation_id) {
-      return { valid: false, reason: 'MISSING_JOB_RESERVATION_ID' };
+      return {
+        valid: false,
+        reason: 'MISSING_JOB_RESERVATION_ID',
+      };
     }
 
     const client = getSupabaseAdminClient();
+
     const { data: reservation, error } = await client
       .from('credit_reservations')
       .select('*')
@@ -772,49 +889,102 @@ export class DatabaseService {
       .maybeSingle();
 
     if (error || !reservation) {
-      return { valid: false, reason: 'RESERVATION_NOT_FOUND' };
-    }
-
-    // 1. Status must be active: 'RESERVED' or 'PARTIALLY_CAPTURED'
-    if (reservation.status !== 'RESERVED' && reservation.status !== 'PARTIALLY_CAPTURED') {
-      return { valid: false, reason: `INVALID_RESERVATION_STATUS: ${reservation.status}`, reservation };
+      return {
+        valid: false,
+        reason: 'RESERVATION_NOT_FOUND',
+      };
     }
 
     // 2. Canonical reference linkage
     if (reservation.reference_type !== 'PROCESSING_JOB') {
-      return { valid: false, reason: `REFERENCE_TYPE_MISMATCH: ${reservation.reference_type}`, reservation };
+      return {
+        valid: false,
+        reason: `REFERENCE_TYPE_MISMATCH: ${reservation.reference_type}`,
+        reservation,
+      };
     }
 
     if (reservation.reference_id !== job.id) {
-      return { valid: false, reason: `REFERENCE_ID_MISMATCH: expected ${job.id}, got ${reservation.reference_id}`, reservation };
+      return {
+        valid: false,
+        reason: `REFERENCE_ID_MISMATCH: expected ${job.id}, got ${reservation.reference_id}`,
+        reservation,
+      };
     }
 
     // 3. User ownership consistency
     if (reservation.user_id !== job.user_id) {
-      return { valid: false, reason: `USER_ID_MISMATCH: job user ${job.user_id} != reservation user ${reservation.user_id}`, reservation };
+      return {
+        valid: false,
+        reason: `USER_ID_MISMATCH: job user ${job.user_id} != reservation user ${reservation.user_id}`,
+        reservation,
+      };
     }
 
     // 4. Amount consistency
-    if (job.estimated_billable_units !== null && job.estimated_billable_units !== undefined) {
-      if (Number(reservation.requested_units) !== Number(job.estimated_billable_units)) {
-        return { valid: false, reason: `AMOUNT_MISMATCH: job estimated ${job.estimated_billable_units} != requested ${reservation.requested_units}`, reservation };
+    if (
+      job.estimated_billable_units !== null &&
+      job.estimated_billable_units !== undefined
+    ) {
+      if (
+        Number(reservation.requested_units) !==
+        Number(job.estimated_billable_units)
+      ) {
+        return {
+          valid: false,
+          reason: `AMOUNT_MISMATCH: job estimated ${job.estimated_billable_units} != requested ${reservation.requested_units}`,
+          reservation,
+        };
       }
     }
 
-    // 5. Remaining held units check: remaining = reserved - captured - released
-    const heldUnits = Number(reservation.reserved_units) - Number(reservation.captured_units) - Number(reservation.released_units);
+    // 5. Reservation lifecycle status
+    // Normal OCR execution is only allowed while reservation still has
+    // an active hold that can be settled.
+    if (
+      reservation.status !== 'RESERVED' &&
+      reservation.status !== 'PARTIALLY_CAPTURED'
+    ) {
+      return {
+        valid: false,
+        reason: `INVALID_RESERVATION_STATUS: ${reservation.status}`,
+        reservation,
+      };
+    }
+
+    // 6. Remaining held units check
+    // remaining = reserved - captured - released
+    const heldUnits =
+      Number(reservation.reserved_units) -
+      Number(reservation.captured_units) -
+      Number(reservation.released_units);
+
     if (heldUnits <= 0) {
-      return { valid: false, reason: `NO_HELD_UNITS_REMAINING: heldUnits = ${heldUnits}`, reservation };
+      return {
+        valid: false,
+        reason: `NO_HELD_UNITS_REMAINING: heldUnits = ${heldUnits}`,
+        reservation,
+      };
     }
 
-    // 6. Before initial execution, captured_units should be 0 and released_units should be 0
+    // 7. Before initial execution, reservation must be untouched.
     if (job.status === 'QUEUED' || !job.started_at) {
-      if (Number(reservation.captured_units) > 0 || Number(reservation.released_units) > 0) {
-        return { valid: false, reason: 'RESERVATION_ALREADY_MUTATED_BEFORE_INITIAL_RUN', reservation };
+      if (
+        Number(reservation.captured_units) > 0 ||
+        Number(reservation.released_units) > 0
+      ) {
+        return {
+          valid: false,
+          reason: 'RESERVATION_ALREADY_MUTATED_BEFORE_INITIAL_RUN',
+          reservation,
+        };
       }
     }
 
-    return { valid: true, reservation };
+    return {
+      valid: true,
+      reservation,
+    };
   }
 
   // --- DOCUMENT PAGES (PREFLIGHT NORMALIZED TABLE) ---
@@ -1686,25 +1856,37 @@ export class DatabaseService {
       metadata: rec.metadata || {},
       created_at: now,
     };
-    const { data } = await client.from('export_files').insert(newExport).select().single();
+    const { data, error } = await client.from('export_files').insert(newExport).select().single();
+    if (error) {
+      console.error('[DatabaseService.createExportRecord] Database insert failed:', error.message);
+      throw new Error(`DATABASE_EXPORT_INSERT_FAILED: ${error.message}`);
+    }
     return data || newExport;
   }
 
   async getDocumentExports(userId: string, documentId: string): Promise<ExportRecord[]> {
     const client = getSupabaseAdminClient();
-    const { data } = await client.from('export_files').select('*').eq('document_id', documentId).eq('user_id', userId).order('created_at', { ascending: false });
+    const { data, error } = await client.from('export_files').select('*').eq('document_id', documentId).eq('user_id', userId).order('created_at', { ascending: false });
+    if (error) {
+      console.error('[DatabaseService.getDocumentExports] Query error:', error.message);
+      throw new Error(`DATABASE_EXPORT_QUERY_FAILED: ${error.message}`);
+    }
     return data || [];
   }
 
   async getUserExportById(userId: string, exportId: string): Promise<ExportRecord | null> {
     const client = getSupabaseAdminClient();
-    const { data } = await client.from('export_files').select('*').eq('id', exportId).eq('user_id', userId).maybeSingle();
+    const { data, error } = await client.from('export_files').select('*').eq('id', exportId).eq('user_id', userId).maybeSingle();
+    if (error) {
+      console.error('[DatabaseService.getUserExportById] Query error:', error.message);
+      throw new Error(`DATABASE_EXPORT_QUERY_FAILED: ${error.message}`);
+    }
     return data || null;
   }
 
   async findExistingExport(userId: string, documentId: string, format: string, mode: string): Promise<ExportRecord | null> {
     const client = getSupabaseAdminClient();
-    const { data } = await client
+    const { data, error } = await client
       .from('export_files')
       .select('*')
       .eq('document_id', documentId)
@@ -1715,6 +1897,11 @@ export class DatabaseService {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    if (error) {
+      console.warn('[DatabaseService.findExistingExport] Query warning:', error.message);
+      return null;
+    }
 
     return data || null;
   }

@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
@@ -18,7 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '../..');
 const TARGET_DIR = path.resolve(ROOT_DIR, '.phase3b_production_artifact');
-const RELEASE_ID = 'phase3b-full-runtime-20261005-04';
+const RELEASE_ID = process.env.RELEASE_ID || 'phase3b-full-runtime-20261005-05';
 
 let gitHeadSha = 'UNKNOWN';
 let workingTreeDirty = true;

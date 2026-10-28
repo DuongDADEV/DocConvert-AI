@@ -516,7 +516,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                   <span className="text-base font-extrabold text-blue-600">
                     {preflightData.estimatedCredits} Credits
                   </span>
-                  <p className="text-[10px] text-slate-400">1 trang = 1 Credit</p>
+                  <p className="text-[10px] text-slate-400">Ước tính theo cấu trúc trang (Native: 0.35, Scan: 1.98)</p>
                 </div>
               </div>
             </div>

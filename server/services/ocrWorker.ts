@@ -7,6 +7,7 @@ import { ProcessingExecutor } from './pde/ProcessingExecutor.js';
 import type { DocumentProcessingPlan } from './pde/types.js';
 import { ValidationEngine } from './validation/ValidationEngine.js';
 import { SecondaryOcrCoordinator } from './secondaryOcr/SecondaryOcrCoordinator.js';
+import { creditService } from './credit/creditService.js';
 
 export class OcrBackgroundWorker {
   private provider: DocumentAIProvider;
@@ -89,6 +90,11 @@ export class OcrBackgroundWorker {
       // 3. Verify Document existence & ownership (Critical Isolation Check)
       const document = await db.getUserDocumentById(userId, documentId);
       if (!document) {
+        try {
+          await db.rollbackDocumentQuota(userId, jobId);
+        } catch (quotaErr) {
+          console.error(`[OcrWorker] Error rolling back quota on missing document for job ${jobId}:`, quotaErr);
+        }
         await db.updateProcessingJob(userId, jobId, {
           status: 'FAILED',
           error_code: 'UNAUTHORIZED_OR_NOT_FOUND',
@@ -112,17 +118,208 @@ export class OcrBackgroundWorker {
       // 3b. Phase 3B / 3B.1 Worker Hard Gate: Processing job must have a valid ACTIVE reservation
       // Validates bidirectional consistency, user match, status ('RESERVED'/'PARTIALLY_CAPTURED'), amount, and remaining held units
       const reservationValidation = await db.getValidatedReservationForJob(job);
+      const reservation = reservationValidation.reservation;
+
+      // B3: VALIDATING_RESULT is a settlement-only recovery state
+      if (job.status === 'VALIDATING_RESULT') {
+        const latestDoc = await db.getUserDocumentById(userId, documentId);
+        if (!latestDoc || (latestDoc.status !== 'READY' && latestDoc.status !== 'REVIEW_REQUIRED')) {
+          console.warn(
+            `[OcrWorker] Job ${jobId} is VALIDATING_RESULT but document status is ${latestDoc?.status}. Settlement recovery cannot finalize.`
+          );
+          await db.updateProcessingJob(userId, jobId, {
+            status: 'VALIDATING_RESULT',
+            error_code: 'SETTLEMENT_RECOVERY_DOCUMENT_STATE_INVALID',
+            error_message: `Trạng thái tài liệu không hợp lệ để phục hồi quyết toán (${latestDoc?.status}). Yêu cầu kiểm tra thủ công.`,
+            current_step: 'Đang chờ xác minh trạng thái tài liệu trước khi quyết toán...',
+          });
+          return await db.getProcessingJob(userId, jobId);
+        }
+
+        const recoveredFinalStatus: 'READY' | 'REVIEW_REQUIRED' = latestDoc.status as any;
+
+        // B4: Recovery Case A — Active Reservation (valid hold awaiting capture)
+        if (reservationValidation.valid && reservation) {
+          const capturedUnits = Number(reservation.captured_units);
+          const releasedUnits = Number(reservation.released_units);
+          const expectedUnits = Number(job.estimated_billable_units || 0);
+          const outstandingReservedUnits = Number(reservation.reserved_units) - capturedUnits - releasedUnits;
+
+          const invariantOk =
+            releasedUnits === 0 &&
+            outstandingReservedUnits > 0 &&
+            capturedUnits + outstandingReservedUnits === expectedUnits;
+
+          if (!invariantOk) {
+            console.error(
+              `[OcrWorker] [SETTLEMENT_RECOVERY_INVARIANT_FAILED] Job ${jobId}: reserved=${reservation.reserved_units}, captured=${capturedUnits}, released=${releasedUnits}, expected=${expectedUnits}, outstanding=${outstandingReservedUnits}`
+            );
+            await db.updateProcessingJob(userId, jobId, {
+              status: 'VALIDATING_RESULT',
+              error_code: 'SETTLEMENT_RECOVERY_INVARIANT_FAILED',
+              error_message: 'Khoản giữ credit không đáp ứng điều kiện quyết toán an toàn. Yêu cầu kiểm tra thủ công.',
+              current_step: 'Đang chờ kiểm tra tính nhất quán của credit trước khi hoàn tất xử lý...',
+            });
+            return await db.getProcessingJob(userId, jobId);
+          }
+
+          try {
+            await creditService.captureReservation({
+              userId,
+              reservationId: job.reservation_id as string,
+              captureUnits: outstandingReservedUnits,
+              idempotencyKey: `processing-capture:${jobId}`,
+              metadata: {
+                job_id: jobId,
+                document_id: documentId,
+                final_status: recoveredFinalStatus,
+                pricing_version: job.pricing_version,
+                settlement_source: 'OCR_WORKER_SETTLEMENT_RECOVERY',
+              },
+            });
+
+            const updatedJob = await db.updateProcessingJob(userId, jobId, {
+              status: recoveredFinalStatus,
+              current_step: recoveredFinalStatus === 'REVIEW_REQUIRED'
+                ? 'Trích xuất hoàn tất. Phát hiện các ô cần kiểm tra đối soát.'
+                : 'Trích xuất và kiểm định thành công. Dữ liệu sẵn sàng xuất Excel.',
+              progress: 100,
+              error_code: null as any,
+              error_message: null as any,
+              completed_at: new Date().toISOString(),
+            });
+
+            await db.updateDocumentStatus(userId, documentId, recoveredFinalStatus);
+            return updatedJob;
+          } catch (captureErr: any) {
+            console.error(`[OcrWorker] Settlement recovery capture failed for job ${jobId}:`, captureErr);
+            const settlementAttempt = (job.attempt_count || 1) + 1;
+            const maxSettlementRetries = 5;
+
+            if (settlementAttempt > maxSettlementRetries) {
+              console.error(
+                `[OcrWorker] Settlement recovery capture retries exhausted (${settlementAttempt} > ${maxSettlementRetries}) for job ${jobId}. Halting automatic retry.`
+              );
+              await db.updateProcessingJob(userId, jobId, {
+                status: 'VALIDATING_RESULT',
+                attempt_count: settlementAttempt,
+                error_code: 'SETTLEMENT_RETRY_EXHAUSTED',
+                error_message: `Quyết toán tín dụng thất bại sau ${maxSettlementRetries} lần thử lại tự động. Yêu cầu kiểm tra thủ công.`,
+                current_step: 'Đã dừng thử lại tự động. Đang chờ kiểm tra thủ công...',
+              });
+              return await db.getProcessingJob(userId, jobId);
+            }
+
+            const delayMs = Math.min(1000 * Math.pow(2, settlementAttempt - 1), 30000);
+            const delaySec = Math.round(delayMs / 1000);
+
+            await db.updateProcessingJob(userId, jobId, {
+              status: 'VALIDATING_RESULT',
+              attempt_count: settlementAttempt,
+              error_code: 'CREDIT_SETTLEMENT_RETRY_REQUIRED',
+              error_message: `Quyết toán tín dụng gặp lỗi tạm thời: ${captureErr.message || 'Lỗi không xác định'}. Đang thử lại sau ${delaySec}s...`,
+              current_step: `Đang thử lại quyết toán tín dụng lần ${settlementAttempt} sau ${delaySec}s...`,
+            });
+
+            const retryTimer = setTimeout(() => {
+              this.activeRetryTimers.delete(jobId);
+              this.processJob(userId, jobId, documentId).catch((retryErr) => {
+                console.error(`[OcrWorker] Error during scheduled settlement recovery retry for job ${jobId}:`, retryErr);
+              });
+            }, delayMs);
+            retryTimer.unref();
+            this.activeRetryTimers.set(jobId, retryTimer);
+            return await db.getProcessingJob(userId, jobId);
+          }
+        }
+        // B6: Recovery Case B — CAPTURE already committed before terminal job status
+        else if (
+          reservation &&
+          reservationValidation.reason === `INVALID_RESERVATION_STATUS: ${reservation.status}` &&
+          (reservation.status === 'CAPTURED' || reservation.status === 'SETTLED')
+        ) {
+          const capturedUnits = Number(reservation.captured_units);
+          const releasedUnits = Number(reservation.released_units);
+          const expectedUnits = Number(job.estimated_billable_units || 0);
+          const outstandingUnits = Number(reservation.reserved_units) - capturedUnits - releasedUnits;
+
+          if (releasedUnits === 0 && capturedUnits === expectedUnits && outstandingUnits === 0) {
+            console.log(
+              `[OcrWorker] Job ${jobId} settlement already committed (${reservation.status}). Finalizing job to ${recoveredFinalStatus}.`
+            );
+            const updatedJob = await db.updateProcessingJob(userId, jobId, {
+              status: recoveredFinalStatus,
+              current_step: recoveredFinalStatus === 'REVIEW_REQUIRED'
+                ? 'Trích xuất hoàn tất. Phát hiện các ô cần kiểm tra đối soát.'
+                : 'Trích xuất và kiểm định thành công. Dữ liệu sẵn sàng xuất Excel.',
+              progress: 100,
+              error_code: null as any,
+              error_message: null as any,
+              completed_at: new Date().toISOString(),
+            });
+            await db.updateDocumentStatus(userId, documentId, recoveredFinalStatus);
+            return updatedJob;
+          } else {
+            console.error(
+              `[OcrWorker] Job ${jobId} reservation already terminal but amounts mismatch: captured=${capturedUnits}, expected=${expectedUnits}, outstanding=${outstandingUnits}`
+            );
+            await db.updateProcessingJob(userId, jobId, {
+              status: 'VALIDATING_RESULT',
+              error_code: 'SETTLEMENT_RECOVERY_INVARIANT_FAILED',
+              error_message: 'Khoản giữ tín dụng đã kết thúc nhưng số lượng không khớp với tác vụ. Yêu cầu kiểm tra thủ công.',
+              current_step: 'Đang chờ kiểm tra tính nhất quán của credit trước khi hoàn tất xử lý...',
+            });
+            return await db.getProcessingJob(userId, jobId);
+          }
+        } else {
+          // Untrusted reservation condition in VALIDATING_RESULT
+          console.error(
+            `[OcrWorker] Job ${jobId} in VALIDATING_RESULT failed reservation validation: ${reservationValidation.reason}. Halting.`
+          );
+          await db.updateProcessingJob(userId, jobId, {
+            status: 'VALIDATING_RESULT',
+            error_code: 'CREDIT_SETTLEMENT_RECOVERY_INVALID',
+            error_message: `Trạng thái khoản giữ credit không hợp lệ để recovery (${reservationValidation.reason}). Yêu cầu kiểm tra thủ công.`,
+            current_step: 'Đang chờ kiểm tra thủ công khoản giữ credit...',
+          });
+          return await db.getProcessingJob(userId, jobId);
+        }
+      }
+
+      // 3c. Phase 3B / 3B.1 Worker Hard Gate: Normal OCR execution requires valid ACTIVE reservation
       if (!reservationValidation.valid) {
         console.error(
           `[OcrWorker] [DEFENSIVE_FINANCIAL_GATE_FAIL] Job ${jobId} failed reservation validation: ${reservationValidation.reason}. Worker failing closed.`
         );
+
+        // Window D Recovery Check: If reservation was already RELEASED, finalize job without rerunning OCR or double-release
+        if (
+          reservation &&
+          reservationValidation.reason === 'INVALID_RESERVATION_STATUS: RELEASED' &&
+          Number(reservation.released_units) > 0 &&
+          Number(reservation.captured_units) === 0
+        ) {
+          console.log(
+            `[OcrWorker] Job ${jobId} reservation already RELEASED (${reservation.status}). Finalizing job and document to FAILED.`
+          );
+          await db.updateProcessingJob(userId, jobId, {
+            status: 'FAILED',
+            error_code: 'OCR_PROCESSING_FAILED',
+            error_message: 'Không thể hoàn thành nhận dạng tài liệu sau 3 lần thử. Khoản giữ credit đã được hoàn trả.',
+            completed_at: new Date().toISOString(),
+          });
+          await db.updateDocumentStatus(userId, documentId, 'FAILED');
+          return await db.getProcessingJob(userId, jobId);
+        }
+
         await db.updateProcessingJob(userId, jobId, {
           status: 'FAILED',
           error_code: 'MISSING_CREDIT_RESERVATION',
           error_message: `Không tìm thấy hoặc không hợp lệ khoản giữ trước tín dụng cho tác vụ này (${reservationValidation.reason}).`,
           completed_at: new Date().toISOString(),
         });
-        return null;
+        await db.updateDocumentStatus(userId, documentId, 'FAILED');
+        return await db.getProcessingJob(userId, jobId);
       }
 
       // 4. Update status to PROCESSING
@@ -316,10 +513,79 @@ export class OcrBackgroundWorker {
           ? `Trích xuất hoàn tất. Phát hiện các ô cần kiểm tra đối soát.`
           : 'Trích xuất và kiểm định thành công. Dữ liệu sẵn sàng xuất Excel.';
 
+        // B8: Persist VALIDATING_RESULT as restart-recoverable financial checkpoint before CAPTURE
+        await db.updateProcessingJob(userId, jobId, {
+          status: 'VALIDATING_RESULT',
+          current_step: 'Đang hoàn tất quyết toán tín dụng và trạng thái xử lý...',
+          progress: 98,
+        });
+
+        // B8: Reload latest processing job and reservation
+        const settlementJob = await db.getProcessingJob(userId, jobId);
+        if (!settlementJob) {
+          console.error(`[OcrWorker] [SETTLEMENT_FAIL] Job ${jobId} not found when reloading for settlement.`);
+          return null;
+        }
+
+        const settlementReservationValidation = await db.getValidatedReservationForJob(settlementJob);
+        if (!settlementReservationValidation.valid || !settlementReservationValidation.reservation) {
+          console.error(
+            `[OcrWorker] [SETTLEMENT_FAIL] Job ${jobId} reservation invalid for settlement: ${settlementReservationValidation.reason}`
+          );
+          await db.updateProcessingJob(userId, jobId, {
+            status: 'VALIDATING_RESULT',
+            error_code: 'CREDIT_SETTLEMENT_VALIDATION_FAILED',
+            error_message: `OCR đã hoàn tất nhưng khoản giữ credit không hợp lệ để quyết toán (${settlementReservationValidation.reason}). Yêu cầu kiểm tra thủ công.`,
+          });
+          return await db.getProcessingJob(userId, jobId);
+        }
+
+        // B9: Settlement Invariant Validation
+        const settlementRes = settlementReservationValidation.reservation;
+        const reservedUnits = Number(settlementRes.reserved_units);
+        const capturedUnits = Number(settlementRes.captured_units);
+        const releasedUnits = Number(settlementRes.released_units);
+        const expectedUnits = Number(settlementJob.estimated_billable_units || 0);
+        const outstandingReservedUnits = reservedUnits - capturedUnits - releasedUnits;
+
+        if (
+          releasedUnits !== 0 ||
+          outstandingReservedUnits <= 0 ||
+          capturedUnits + outstandingReservedUnits !== expectedUnits
+        ) {
+          console.error(
+            `[OcrWorker] [SETTLEMENT_INVARIANT_FAIL] Job ${jobId}: reserved=${reservedUnits}, captured=${capturedUnits}, released=${releasedUnits}, expected=${expectedUnits}, outstanding=${outstandingReservedUnits}`
+          );
+          await db.updateProcessingJob(userId, jobId, {
+            status: 'VALIDATING_RESULT',
+            error_code: 'CREDIT_SETTLEMENT_INVARIANT_FAILED',
+            error_message: 'Khoản giữ credit không đáp ứng điều kiện quyết toán an toàn sau OCR. Yêu cầu kiểm tra thủ công.',
+          });
+          return await db.getProcessingJob(userId, jobId);
+        }
+
+        // B9: Execute CAPTURE
+        await creditService.captureReservation({
+          userId,
+          reservationId: job.reservation_id as string,
+          captureUnits: outstandingReservedUnits,
+          idempotencyKey: `processing-capture:${jobId}`,
+          metadata: {
+            job_id: jobId,
+            document_id: documentId,
+            final_status: finalStatus,
+            pricing_version: settlementJob.pricing_version,
+            settlement_source: 'OCR_WORKER_SUCCESS',
+          },
+        });
+
+        // 11b. Finalize Job & Document Status ONLY after successful CAPTURE
         const updatedJob = await db.updateProcessingJob(userId, jobId, {
           status: finalStatus,
           current_step: stepDescription,
           progress: 100,
+          error_code: null as any,
+          error_message: null as any,
           completed_at: new Date().toISOString(),
         });
 
@@ -328,6 +594,54 @@ export class OcrBackgroundWorker {
         return updatedJob;
       } catch (err: any) {
         console.error(`[OcrWorker] Error processing job ${jobId}:`, err.message || err);
+
+        // B10: Settlement failure guard — if job reached VALIDATING_RESULT, do NOT rerun OCR
+        const latestJobState = await db.getProcessingJob(userId, jobId);
+        if (latestJobState?.status === 'VALIDATING_RESULT') {
+          const settlementAttempt = (latestJobState.attempt_count || 1) + 1;
+          const maxSettlementRetries = 5;
+
+          if (settlementAttempt > maxSettlementRetries) {
+            console.error(
+              `[OcrWorker] Settlement capture retries exhausted (${settlementAttempt} > ${maxSettlementRetries}) for job ${jobId}. Halting automatic retry.`
+            );
+            await db.updateProcessingJob(userId, jobId, {
+              status: 'VALIDATING_RESULT',
+              attempt_count: settlementAttempt,
+              error_code: 'SETTLEMENT_RETRY_EXHAUSTED',
+              error_message: `Quyết toán tín dụng thất bại sau ${maxSettlementRetries} lần thử lại tự động. Yêu cầu kiểm tra thủ công.`,
+              current_step: 'Đã dừng thử lại tự động. Đang chờ kiểm tra thủ công...',
+            });
+            return await db.getProcessingJob(userId, jobId);
+          }
+
+          const delayMs = Math.min(1000 * Math.pow(2, settlementAttempt - 1), 30000);
+          const delaySec = Math.round(delayMs / 1000);
+
+          console.warn(
+            `[OcrWorker] [SETTLEMENT_ONLY_RETRY] Job ${jobId} remains VALIDATING_RESULT. Retrying settlement only in ${delaySec}s.`
+          );
+
+          await db.updateProcessingJob(userId, jobId, {
+            status: 'VALIDATING_RESULT',
+            attempt_count: settlementAttempt,
+            error_code: 'CREDIT_SETTLEMENT_RETRY_REQUIRED',
+            error_message: `Quyết toán tín dụng gặp lỗi: ${err.message || 'Lỗi không xác định'}. Đang thử lại sau ${delaySec}s...`,
+            current_step: `Đang thử lại quyết toán tín dụng lần ${settlementAttempt} sau ${delaySec}s...`,
+          });
+
+          const retryTimer = setTimeout(() => {
+            this.activeRetryTimers.delete(jobId);
+            this.processJob(userId, jobId, documentId).catch((retryErr) => {
+              console.error(`[OcrWorker] Error during scheduled settlement retry for job ${jobId}:`, retryErr);
+            });
+          }, delayMs);
+
+          retryTimer.unref();
+          this.activeRetryTimers.set(jobId, retryTimer);
+
+          return await db.getProcessingJob(userId, jobId);
+        }
 
         const maxRetries = 3;
         const currentAttempt = (job.attempt_count || 1) + 1;
@@ -356,15 +670,74 @@ export class OcrBackgroundWorker {
           retryTimer.unref();
           this.activeRetryTimers.set(jobId, retryTimer);
         } else {
-          // Max retries exceeded -> FAILED
+          // B11: Terminal OCR failure — validate and RELEASE reservation before terminal FAILED
           const safeErrorMessage = 'Không thể hoàn thành nhận dạng tài liệu sau 3 lần thử. Vui lòng thử lại.';
-          await db.updateProcessingJob(userId, jobId, {
-            status: 'FAILED',
-            error_code: 'OCR_PROCESSING_FAILED',
-            error_message: safeErrorMessage,
-            completed_at: new Date().toISOString(),
-          });
-          await db.updateDocumentStatus(userId, documentId, 'FAILED');
+
+          let releaseFailed = false;
+          let releaseErrorMessage = '';
+          const latestJobBeforeRelease = await db.getProcessingJob(userId, jobId);
+          if (latestJobBeforeRelease?.reservation_id) {
+            try {
+              const latestReservationValidation = await db.getValidatedReservationForJob(latestJobBeforeRelease);
+              if (latestReservationValidation.valid && latestReservationValidation.reservation) {
+                const heldRes = latestReservationValidation.reservation;
+                const outstandingReservedUnits =
+                  Number(heldRes.reserved_units) - Number(heldRes.captured_units) - Number(heldRes.released_units);
+
+                if (outstandingReservedUnits > 0) {
+                  console.log(
+                    `[OcrWorker] Terminal OCR failure: releasing ${outstandingReservedUnits} units for job ${jobId}, reservation ${job.reservation_id}`
+                  );
+                  await creditService.releaseReservation({
+                    userId,
+                    reservationId: job.reservation_id as string,
+                    releaseUnits: outstandingReservedUnits,
+                    idempotencyKey: `processing-release:${jobId}`,
+                    metadata: {
+                      job_id: jobId,
+                      document_id: documentId,
+                      failure_code: 'OCR_PROCESSING_FAILED',
+                      settlement_source: 'OCR_WORKER_FAILURE',
+                    },
+                  });
+                }
+              } else {
+                console.warn(
+                  `[OcrWorker] Cannot release reservation for job ${jobId}: validation reason ${latestReservationValidation.reason}`
+                );
+              }
+            } catch (releaseErr: any) {
+              releaseFailed = true;
+              releaseErrorMessage = releaseErr.message || 'Lỗi không xác định';
+              console.error(`[OcrWorker] Error releasing reservation on terminal failure for job ${jobId}:`, releaseErr);
+            }
+          }
+
+          // Phase 7.7 (P0-B): Safe Idempotent Quota Rollback for Terminal Job Failure
+          try {
+            const quotaRollbackResult = await db.rollbackDocumentQuota(userId, jobId);
+            console.log(`[OcrWorker] Quota rollback for job ${jobId}:`, quotaRollbackResult);
+          } catch (quotaErr: any) {
+            console.error(`[OcrWorker] Error rolling back quota for job ${jobId}:`, quotaErr?.message || quotaErr);
+          }
+
+          if (releaseFailed) {
+            await db.updateProcessingJob(userId, jobId, {
+              status: 'FAILED',
+              error_code: 'CREDIT_RELEASE_FAILED',
+              error_message: `Không thể hoàn thành nhận dạng tài liệu và xảy ra lỗi khi giải phóng khoản giữ credit (${releaseErrorMessage}). Yêu cầu kiểm tra tài chính thủ công.`,
+              completed_at: new Date().toISOString(),
+            });
+            await db.updateDocumentStatus(userId, documentId, 'FAILED');
+          } else {
+            await db.updateProcessingJob(userId, jobId, {
+              status: 'FAILED',
+              error_code: 'OCR_PROCESSING_FAILED',
+              error_message: safeErrorMessage,
+              completed_at: new Date().toISOString(),
+            });
+            await db.updateDocumentStatus(userId, documentId, 'FAILED');
+          }
         }
 
         return await db.getProcessingJob(userId, jobId);

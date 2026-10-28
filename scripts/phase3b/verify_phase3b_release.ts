@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -38,9 +38,10 @@ export async function verifyRelease() {
   // 1. Release manifest
   assert(fs.existsSync(RELEASE_MANIFEST_PATH), 'Release manifest exists');
   const releaseManifest = JSON.parse(fs.readFileSync(RELEASE_MANIFEST_PATH, 'utf-8'));
+  const expectedReleaseId = process.env.RELEASE_ID || 'phase3b-full-runtime-20261005-05';
   assert(
-    releaseManifest.releaseId === 'phase3b-full-runtime-20261005-04',
-    `Release ID is phase3b-full-runtime-20261005-04 (got: ${releaseManifest.releaseId})`
+    releaseManifest.releaseId === expectedReleaseId,
+    `Release ID is ${expectedReleaseId} (got: ${releaseManifest.releaseId})`
   );
 
   // 2. Source manifest

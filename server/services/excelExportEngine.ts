@@ -540,28 +540,45 @@ export class ExcelExportEngine {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
 
-    // 9. Persist Export Record into DB
-    const exportRecord = await db.createExportRecord({
-      id: exportId,
-      user_id: userId,
-      document_id: documentId,
-      export_format: 'XLSX',
-      export_mode: mode,
-      file_name: finalFileName,
-      file_size: fileBuffer.length,
-      storage_bucket: savedFile.storageBucket,
-      storage_path: savedFile.storagePath,
-      status: 'COMPLETED',
-      metadata: {
-        tablesCount: ocrData.tables.length,
-        totalRows: totalRowsCount,
-        totalCells: totalCellsCount,
-        lowConfidenceCount: totalLowConfidenceCount,
-        reviewedCount: totalReviewedCount,
-        includeReviewLog,
-        includeValidationSheet,
-      },
-    });
+    // 9. Persist Export Record into DB with compensating cleanup on failure
+    let exportRecord: any;
+    try {
+      exportRecord = await db.createExportRecord({
+        id: exportId,
+        user_id: userId,
+        document_id: documentId,
+        export_format: 'XLSX',
+        export_mode: mode,
+        file_name: finalFileName,
+        file_size: fileBuffer.length,
+        storage_bucket: savedFile.storageBucket,
+        storage_path: savedFile.storagePath,
+        status: 'COMPLETED',
+        metadata: {
+          tablesCount: ocrData.tables.length,
+          totalRows: totalRowsCount,
+          totalCells: totalCellsCount,
+          lowConfidenceCount: totalLowConfidenceCount,
+          reviewedCount: totalReviewedCount,
+          includeReviewLog,
+          includeValidationSheet,
+        },
+      });
+    } catch (dbErr: any) {
+      console.error(`[ExcelExportEngine] Export metadata persistence failed for export ${exportId}:`, dbErr.message);
+      // Attempt compensating cleanup of orphan storage object
+      try {
+        const cleanupSuccess = await storageService.deleteDocumentFiles(userId, `export_${exportId}`);
+        if (cleanupSuccess) {
+          console.log(`[ExcelExportEngine] Cleaned up orphan storage object for export ${exportId}`);
+        } else {
+          console.warn(`[ExcelExportEngine] Compensating cleanup failed for export ${exportId}: Storage API reported failure`);
+        }
+      } catch (cleanupErr: any) {
+        console.warn(`[ExcelExportEngine] Failed to delete orphan storage object for export ${exportId}:`, cleanupErr.message);
+      }
+      throw new Error(`EXPORT_PERSISTENCE_FAILED: Không thể lưu thông tin bản xuất tệp vào cơ sở dữ liệu.`);
+    }
 
     // 10. Write Audit Log (EXCLUDE all secrets, keys, or JWT)
     auditService.log({

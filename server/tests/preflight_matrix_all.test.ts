@@ -56,8 +56,8 @@ async function runTestMatrix() {
     'A',
     'All pages classified as NATIVE_TEXT'
   );
-  assert(resA.summary.nativeTextPages === 2, 'A', 'Summary nativeTextPages is 2');
-  assert(resA.estimatedCredits === 2, 'A', 'estimatedCredits = 2');
+  assert(resA.estimatedUnits === 700, 'A', 'estimatedUnits = 700');
+  assert(resA.estimatedCredits === 0.7, 'A', 'estimatedCredits = 0.7');
 
   // --- TEST B: Scanned PDF ---
   console.log('\n--- Running Test B: Scanned PDF ---');

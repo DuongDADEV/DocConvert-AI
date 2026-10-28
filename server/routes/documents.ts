@@ -17,6 +17,8 @@ import { UnifiedTableService } from '../services/unifiedTableService.js';
 import { preflightService, PREFLIGHT_CONFIG } from '../services/preflightService.js';
 import { humanReviewService } from '../services/humanReviewService.js';
 import { processingEligibilityService } from '../services/credit/processingEligibilityService.js';
+import { processingPricingEngine } from '../services/credit/processingPricingEngine.js';
+import { unitsToCredits } from '../services/credit/creditService.js';
 
 const router = express.Router();
 
@@ -290,6 +292,7 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
           fileType,
           pageCount: preflightResult.pageCount,
           preflightSummary: preflightResult.summary,
+          estimatedUnits: preflightResult.estimatedUnits,
           estimatedCredits: preflightResult.estimatedCredits,
         },
       });
@@ -301,6 +304,7 @@ router.post('/upload', ocrRateLimiter, upload.single('file'), async (req: Authen
         preflight: {
           pageCount: preflightResult.pageCount,
           summary: preflightResult.summary,
+          estimatedUnits: preflightResult.estimatedUnits,
           estimatedCredits: preflightResult.estimatedCredits,
           pages: preflightResult.pages,
         },
@@ -623,6 +627,35 @@ router.get('/:id/preflight', async (req: AuthenticatedRequest, res: Response): P
 
     const pages = await db.getDocumentPages(userId, docId, req.userToken);
 
+    let estimatedUnits = 0;
+    let estimatedCredits = 0;
+    try {
+      const pageCount = document.page_count && document.page_count > 0 ? document.page_count : (pages.length > 0 ? pages.length : 1);
+      const pricingEstimate = await processingPricingEngine.estimateProcessingCost({
+        documentId: docId,
+        pageCount,
+        pages: pages.map((p) => ({
+          pageNumber: p.page_number,
+          classification: p.classification as any,
+          textCharCount: p.text_char_count,
+          textCoverage: p.text_coverage,
+          imageCoverage: p.image_coverage,
+          hasFullPageImage: Boolean(p.has_full_page_image),
+        })),
+        outputType: document.output_type || 'EXCEL',
+      });
+      estimatedUnits = pricingEstimate.estimatedUnits;
+      estimatedCredits = pricingEstimate.estimatedCredits;
+    } catch {
+      for (const p of pages) {
+        estimatedUnits += (p.classification === 'NATIVE_TEXT' ? 350 : 1980);
+      }
+      if (pages.length === 0) {
+        estimatedUnits = (document.page_count || 1) * 1980;
+      }
+      estimatedCredits = unitsToCredits(estimatedUnits);
+    }
+
     res.json({
       success: true,
       document,
@@ -634,7 +667,8 @@ router.get('/:id/preflight', async (req: AuthenticatedRequest, res: Response): P
         uncertainPages: 0,
       },
       pages,
-      estimatedCredits: document.page_count * PREFLIGHT_CONFIG.CREDITS_PER_PAGE,
+      estimatedUnits,
+      estimatedCredits,
       outputType: document.output_type || 'EXCEL',
     });
   } catch (err: any) {

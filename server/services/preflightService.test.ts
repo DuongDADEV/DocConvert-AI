@@ -38,8 +38,8 @@ async function runTests() {
   assert(nativeResult.pages[0].classification === 'NATIVE_TEXT', 'Page 1 classified as NATIVE_TEXT', `Got: ${nativeResult.pages[0].classification}`);
   assert(nativeResult.summary.nativeTextPages === 1, 'Summary nativeTextPages is 1');
   assert(nativeResult.pages[0].textCoverage > 0.1, 'Text coverage > 10%');
-  assert(nativeResult.pages[0].imageCoverage === 0, 'Image coverage is 0');
-  assert(nativeResult.estimatedCredits === 1, 'Estimated credits is 1');
+  assert(nativeResult.estimatedUnits === 350, 'Native PDF estimatedUnits is 350');
+  assert(nativeResult.estimatedCredits === 0.35, 'Estimated credits is 0.35');
 
   // 2. TEST FULL SCANNED PDF
   console.log('\n--- 2. Testing Scanned PDF ---');
@@ -104,7 +104,8 @@ async function runTests() {
   assert(imgResult.pageCount === 1, 'Image pageCount is 1');
   assert(imgResult.pages[0].classification === 'SCANNED', 'Image classified as SCANNED');
   assert(imgResult.summary.scannedPages === 1, 'Summary scannedPages is 1');
-  assert(imgResult.estimatedCredits === 1, 'Estimated credits is 1');
+  assert(imgResult.estimatedUnits === 1980, 'Image estimatedUnits is 1980');
+  assert(imgResult.estimatedCredits === 1.98, 'Image estimatedCredits is 1.98');
 
   // 6. TEST CORRUPTED / INVALID PDF
   console.log('\n--- 6. Testing Corrupted / Invalid PDF ---');

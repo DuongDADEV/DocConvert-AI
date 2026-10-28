@@ -36,6 +36,7 @@ const ROOT_DIR = path.resolve(__dirname, '../..');
 const ARTIFACT_DIR = path.join(ROOT_DIR, '.phase3b_production_artifact');
 const MIGRATION_3B = path.join(ROOT_DIR, 'supabase/migrations/20261004010000_atomic_credit_reserve_before_processing_queue.sql');
 const MIGRATION_HOTFIX = path.join(ROOT_DIR, 'supabase/migrations/20261005010000_fix_grant_user_credits_ledger_entry_type.sql');
+const MIGRATION_PARTIAL_FIX = path.join(ROOT_DIR, 'supabase/migrations/20261006010000_fix_partial_credit_reservation_status.sql');
 const RELEASE_MANIFEST = path.join(ROOT_DIR, 'scripts/phase3b/phase3b_production_release_manifest.json');
 const PREDEPLOY_SQL = path.join(ROOT_DIR, 'scripts/phase3b/phase3b_predeploy_read_only_checks.sql');
 
@@ -216,6 +217,49 @@ async function runTests() {
     creditServiceSrc.includes('async releaseReservation(') &&
       creditServiceSrc.includes("client.rpc('release_credit_reservation',"),
     'RUNTIME-13: releaseReservation RPC interface and un-held unit release semantics preserved'
+  );
+
+  // RUNTIME-13A: worker settles successful processing by CAPTURE
+  check(
+    workerSrc.includes("import { creditService } from './credit/creditService.js';") &&
+      workerSrc.includes('await creditService.captureReservation({') &&
+      workerSrc.includes('reservationId: job.reservation_id') &&
+      workerSrc.includes('idempotencyKey: `processing-capture:${jobId}`'),
+    'RUNTIME-13A: worker CAPTUREs the processing reservation on READY/REVIEW_REQUIRED terminal success'
+  );
+
+  // RUNTIME-13B: worker settles terminal processing failure by RELEASE
+  check(
+    workerSrc.includes('await creditService.releaseReservation({') &&
+      workerSrc.includes('reservationId: job.reservation_id') &&
+      workerSrc.includes('idempotencyKey: `processing-release:${jobId}`'),
+    'RUNTIME-13B: worker RELEASEs the processing reservation when OCR reaches terminal FAILED'
+  );
+
+  // RUNTIME-13C: successful OCR enters settlement recovery state before CAPTURE
+  check(
+    workerSrc.includes("status: 'VALIDATING_RESULT'") &&
+      workerSrc.indexOf("status: 'VALIDATING_RESULT'") <
+        workerSrc.indexOf('await creditService.captureReservation({'),
+    'RUNTIME-13C: worker persists VALIDATING_RESULT before CAPTURE so settlement is restart-recoverable'
+  );
+
+  // RUNTIME-13D: restart recovery handles already-captured settlement without rerunning OCR
+  check(
+    workerSrc.includes("job.status === 'VALIDATING_RESULT'") &&
+      workerSrc.includes("reservation.status === 'CAPTURED'") &&
+      workerSrc.includes("reservation.status === 'SETTLED'"),
+    'RUNTIME-13D: VALIDATING_RESULT recovery recognizes already CAPTURED/SETTLED reservation'
+  );
+
+  // RUNTIME-13E: partial settlement status hotfix preserves valid reservation vocabulary
+  const migPartialFixSql = fs.existsSync(MIGRATION_PARTIAL_FIX) ? fs.readFileSync(MIGRATION_PARTIAL_FIX, 'utf-8') : '';
+  check(
+    migPartialFixSql.includes("v_new_status := 'PARTIALLY_CAPTURED';") &&
+      !migPartialFixSql.includes("v_new_status := 'ACTIVE'") &&
+      migPartialFixSql.includes('CREATE OR REPLACE FUNCTION public.capture_credit_reservation') &&
+      migPartialFixSql.includes('CREATE OR REPLACE FUNCTION public.release_credit_reservation'),
+    'RUNTIME-13E: partial settlement migration 20261006010000 maps to canonical PARTIALLY_CAPTURED and does not emit invalid ACTIVE status'
   );
 
   // RUNTIME-14: FREE bootstrap still works
